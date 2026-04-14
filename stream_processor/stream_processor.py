@@ -126,7 +126,7 @@ class SyncNode(Node):
         self.create_subscription(AltSNR, '/rad_altitude', self.radalt_cb, qos_profile=qos_profile)
 
         # 4. AS7265x Spectrometer (For Reflectance)
-        self.create_subscription(AS7265xCal, 'as7265x/calibrated_values', qos_profile=qos_profile, self.spec_cb)
+        self.create_subscription(AS7265xCal, 'as7265x/calibrated_values', self.spec_cb, qos_profile=qos_profile)
 
         self.get_logger().info("Sync Node Initialized. Waiting for PPS Trigger...")
 
