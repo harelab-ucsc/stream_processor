@@ -42,7 +42,7 @@ from as7265x_at_msgs.msg import AS7265xCal
 # Create a custom QoSProfile to prevent message drops
 qos_profile = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,  # Reliable delivery
-    history=HistoryPolicy.KEEP_LAST          # Keep all messages
+    history=HistoryPolicy.KEEP_ALL           # Keep all messages
 )
 
 
