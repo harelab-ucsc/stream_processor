@@ -75,7 +75,7 @@ class SyncNode(Node):
 
         db_path = os.path.join(os.path.expanduser('~'), self.get_parameter('dir_name').value)
         os.makedirs(db_path, exist_ok=True)
-        self.dbc = dbConnector(os.path.join(db_path, self.get_parameter('db_name').value))
+        self.dbc = dbConnector.dbConnector(os.path.join(db_path, self.get_parameter('db_name').value))
         self.dbc.boot(self.get_parameter('db_name').value, self.sensor_id)
         os.chmod(os.path.join(self.dir_name, self.db_name+'.db'), \
             stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
