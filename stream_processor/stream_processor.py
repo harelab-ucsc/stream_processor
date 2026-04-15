@@ -20,7 +20,7 @@ import os
 import threading
 import numpy as np
 from cv_bridge import CvBridge
-
+import sqlite3
 import time
 import stat
 import csv
@@ -407,20 +407,29 @@ class SyncNode(Node):
                 self.RTK_STATUS,
                 self.INS_STATUS,
                 float(data['radalt']),
-                paths_str,
+                '\"' + paths_str + '\"',
                 time_str
             ]
 
-            val_str = ','.join(map(str, vals))
-            self.dbc.insertIgnoreInto(
-                f"{self.sensor_id}_images_{self.get_parameter('db_name').value}",
-                "x, y, z, q, u, a, t, rtk_status, ins_status, radalt, save_loc, pps_time",
-                val_str
-            )
-            self.get_logger().info(f"Cycle Complete: Saved {len(paths)} at timestep {time_str}")
+#            self.get_logger().info(f'    [THREAD] Saved image to {data_loc}...')
 
-        except Exception as e:
-            self.get_logger().error(f"Post-processing failed: {e}")
+            db_path = os.path.join(self.dir_name, self.db_name + '.db')
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+
+            val_str = ','.join(map(str, vals))
+
+            insert_query = f"""
+            INSERT OR IGNORE INTO {self.sensor_id}_images_{self.db_name}
+            (x, y, z, q, u, a, t, rtk_status, ins_status, radalt, save_loc, pps_time)
+            VALUES ({val_str});
+            """
+            cursor.execute(insert_query)
+            conn.commit()
+            conn.close()
+
+        except Exception as ex:
+            self.get_logger().info(f'[THREAD] Failed to save: {ex}')
 
 
     def destroy_node(self):

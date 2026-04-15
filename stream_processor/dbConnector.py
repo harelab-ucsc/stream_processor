@@ -25,7 +25,7 @@ class dbConnector:
 
     def boot(self, db_name, sensor):
         # print(db_name, sensor)
-        self.setupTable(f"{sensor}_images_{db_name}", "x REAL, y REAL, z REAL, q REAL, u REAL, a REAL, t REAL, rtk_status INTEGER, ins_status INTEGER, radalt REAL, save_loc TEXT UNIQUE, cam_time1 REAL, cam_time2 REAL, ins_time1 REAL, ins_time2 REAL")
+        self.setupTable(f"{sensor}_images_{db_name}", "x REAL, y REAL, z REAL, q REAL, u REAL, a REAL, t REAL, rtk_status INTEGER, ins_status INTEGER, radalt REAL, save_loc TEXT UNIQUE, pps_time REAL")
         self.setupTable(f"clicks_{db_name}", "x REAL, y REAL, zone_num INTEGER, zone_letter TEXT, z REAL, z_msl REAL, tag INTEGER")
         self.setupTable(f"parameters_{db_name}", f"sensorID TEXT UNIQUE, resolution array, intrinsics1 array, intrinsics2 array, extrinsics array")
         self.setupTable(f"ins_data_{db_name}", f"x REAL, y REAL, z REAL, q REAL, u REAL, a REAL, t REAL, insStatus INTEGER, hdwStatus INTEGER, time1 REAL UNIQUE, time2 REAL")
