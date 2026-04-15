@@ -126,7 +126,7 @@ class SyncNode(Node):
         self.create_subscription(AltSNR, '/rad_altitude', self.radalt_cb, qos_profile=qos_profile)
 
         # 4. AS7265x Spectrometer (For Reflectance)
-        self.create_subscription(AS7265xCal, 'as7265x/calibrated_values', self.spec_cb, qos_profile=qos_profile)
+        self.create_subscription(AS7265xCal, '/as7265x/calibrated_values', self.spec_cb, qos_profile=qos_profile)
 
         self.get_logger().info("Sync Node Initialized. Waiting for PPS Trigger...")
 
@@ -245,6 +245,8 @@ class SyncNode(Node):
             # If we get a NEW PPS but haven't "Caught All" from the last one
             if any(v is not None for v in self.caught_data.values()) and not self.all_caught():
                 self.get_logger().error("BIG ERROR: New PPS received before previous cycle completed!")
+                for item in self.caught_data:
+                    self.get_logger().info(f'{item}:{self.caught_data[item]}')
 
             # Clear State
             self.current_pps_stamp = msg
