@@ -81,11 +81,11 @@ class SyncNode(Node):
             stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
         time.sleep(1)
 
-        # sensor calibration parameters
-        self.declare_parameter("sensors_yaml", "sensor_params/birdsEyeSensorParams.yaml")
-        self.sensors_yaml = self.get_parameter("sensors_yaml").value
-        self.sensors_yaml = os.path.join(os.path.expanduser('~'), self.sensors_yaml)
-        self.calibUptake()
+        # # sensor calibration parameters
+        # self.declare_parameter("sensors_yaml", "sensor_params/birdsEyeSensorParams.yaml")
+        # self.sensors_yaml = self.get_parameter("sensors_yaml").value
+        # self.sensors_yaml = os.path.join(os.path.expanduser('~'), self.sensors_yaml)
+        # self.calibUptake()
 
         self.declare_parameter("clicks_csv", "catch/data.csv")
         # self.declare_parameter("clicks_csv", "catch/data__2025_01_10.csv")
