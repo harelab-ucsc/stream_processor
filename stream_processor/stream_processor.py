@@ -1,25 +1,8 @@
 #!/usr/bin/env python3
-"""
-File: sync_node.py
-Description:
-    ROS 2 Sync Node based on State Machine Specs.
-    Flow: Wait for PPS -> Clear State -> Catch All (Cam, Pose, Spec, Radalt)
-    -> Stamp/Correct -> Save (Multithreaded).
-"""
-
-import rclpy
-from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from sensor_msgs.msg import Image
-from std_msgs.msg import Header, Float32MultiArray
-from builtin_interfaces.msg import Time as BuiltinTime
-from inertial_sense_ros2.msg import DIDINS2
 
 import cv2
 import os
 import threading
-import numpy as np
-from cv_bridge import CvBridge
 import sqlite3
 import time
 import stat
@@ -28,9 +11,21 @@ import yaml
 import utm
 import glob2
 import piexif
-from PIL import Image as Img
 import concurrent.futures
 import copy
+
+import numpy as np
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image
+from std_msgs.msg import Header, Float32MultiArray
+from builtin_interfaces.msg import Time as BuiltinTime
+from inertial_sense_ros2.msg import DIDINS2
+
+from PIL import Image as Img
 
 # Custom code imports
 from . import dbConnector
@@ -349,6 +344,7 @@ class SyncNode(Node):
         before saving to disk and SQL.
         """
         try:
+            self.get_logger().info(f"Saving data frame at timestep {time_str}")
             pose = data['pose']
 
             # 1. Reflectance Post-Processing
@@ -411,7 +407,13 @@ class SyncNode(Node):
                 time_str
             ]
 
-#            self.get_logger().info(f'    [THREAD] Saved image to {data_loc}...')
+            val_str = ','.join(map(str, vals))
+            self.dbc.insertIgnoreInto(
+                f"{self.sensor_id}_images_{self.get_parameter('db_name').value}",
+                "x, y, z, q, u, a, t, rtk_status, ins_status, radalt, save_loc, pps_time",
+                val_str
+            )
+            self.get_logger().info(f"Cycle Complete: Saved {len(paths)} images at timestep {time_str}")
 
             db_path = os.path.join(self.dir_name, self.db_name + '.db')
             conn = sqlite3.connect(db_path)
