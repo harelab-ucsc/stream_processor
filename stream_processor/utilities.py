@@ -47,7 +47,6 @@ def matrix_list_converter(mtx: list, mtx_dims):
 
 
 def string_list_converter(foo):
-    # print('foo: ', foo)
     if isinstance(foo, str):
         if foo != "None":
             val = []
