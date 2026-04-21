@@ -21,7 +21,8 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
-from std_msgs.msg import Header, Float32MultiArray
+from std_msgs.msg import Header, Float32MultiArray, Float32
+from std_srvs.srv import Trigger
 from builtin_interfaces.msg import Time as BuiltinTime
 from inertial_sense_ros2.msg import DIDINS2
 
@@ -67,6 +68,14 @@ class SyncNode(Node):
         self.dir_name = self.get_parameter("dir_name").value
         self.dir_name = os.path.join(os.path.expanduser('~'), self.dir_name)
         self.dirCheck()
+
+        self.spectrometer_wavelengths = [
+            410, 435, 460, 485, 510, 535,
+            560, 585, 645, 705, 900, 940,
+            610, 680, 730, 760, 810, 860,
+        ]
+        self.current_raw_spec = None
+        self.panel_calibration = None
 
         db_path = os.path.join(os.path.expanduser('~'), self.get_parameter('dir_name').value)
         os.makedirs(db_path, exist_ok=True)
@@ -124,6 +133,19 @@ class SyncNode(Node):
         self.create_subscription(AS7265xCal, '/as7265x/calibrated_values', self.spec_cb, qos_profile=qos_profile)
 
         self.get_logger().info("Sync Node Initialized. Waiting for PPS Trigger...")
+
+
+        # --- Publishers ---
+        # From micasense_spectrometer_bridge.py:
+        self.irradiance_pub = self.create_publisher(Float32MultiArray, 'spectrometer/irradiance', 10)
+        self.reflectance_pub = self.create_publisher(Float32MultiArray, 'spectrometer/reflectance', 10)
+
+        # From spectrometer_processor.py:
+        self.ndvi_pub = self.create_publisher(Float32, 'spectrometer/ndvi', 10)
+        self.total_irradiance_pub = self.create_publisher(Float32, 'spectrometer/total_intensity', 10)
+
+        # --- Services ---
+        self.capture_panel_srv = self.create_service(Trigger, 'spectrometer/capture_panel', self.capture_panel_callback)
 
         # --- Multithreading setup ---
         self.save_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
@@ -206,6 +228,23 @@ class SyncNode(Node):
                 extr = None
         self.get_logger().info('...Done reading sensor parameters YAML file.\n')
 
+    # From micasense_spectrometer_bridge.py:
+    # Cleaned it up a bit:
+    # Add a persistent current_raw_spec buffer so capture_panel_callback can always save the latest 
+    # spectrometer reading for panel calibration instead of relying on PPS-cycle state that may already have been cleared.
+    def capture_panel_callback(self, request, response):
+        """ Stores the current spectral reading as the white reference (100% reflectance) """
+
+        if self.current_raw_spec is None:
+            response.success = False
+            response.message = "No data received from sensor yet."
+            return response
+        
+        self.panel_calibration = list(self.current_raw_spec)
+        response.success = True
+        response.message = f"Captured panel calibration across {len(self.panel_calibration)} bands."
+        self.get_logger().info(response.message)
+        return response
 
     def putParameters(self, device_key, resolution, intrinsics1, intrinsics2, extrinsics):
         vals = '"'
@@ -272,9 +311,10 @@ class SyncNode(Node):
         if msg.snr > 13:
             self.catch('radalt', msg.altitude)
 
-
+    # saves lists in case of a change in msg.values
     def spec_cb(self, msg):
-        self.catch('spec', msg.values)
+        self.current_raw_spec = list(msg.values)
+        self.catch('spec', list(msg.values))
 
 
     def catch(self, key, data):
@@ -337,6 +377,27 @@ class SyncNode(Node):
         # Push to save executor for saving
         self.save_executor.submit(self.post_process_and_save, data, stamp)
 
+    # Helper function for post_process_and_save:
+    def publish_irradiance(self, spec_vals):
+        irr_msg = Float32MultiArray()
+        irr_msg.data = [float(x) for x in spec_vals]
+        self.irradiance_pub.publish(irr_msg)
+    def compute_reflectance(self, spec_vals):
+        if self.panel_calibration is None:
+            return None
+        
+        if len(self.panel_calibration) != len(spec_vals):
+            self.get_logger.warn("Panel calibration length does not match current spectrometer values. Skipping reflectance calculation.")
+            return None
+        
+        reflectance = []
+        for sample, panel in zip(spec_vals, self.panel_calibration):
+            # Reflectance = Current / Panel_Reference
+            # Assuming the panel is a 1.0 lambertian reflector
+            val = (sample / panel) if panel != 0 else 0.0
+            reflectance.append(float(val))
+        return reflectance
+
 
     def post_process_and_save(self, data, stamp):
         """
@@ -344,12 +405,44 @@ class SyncNode(Node):
         before saving to disk and SQL.
         """
         try:
-            self.get_logger().info(f"Saving data frame at timestep {time_str}")
             pose = data['pose']
+            time_str = f"{stamp.sec}.{str(stamp.nanosec).rjust(9,'0')}"
+            self.get_logger().info(f"Saving data frame at timestep {time_str}")
 
             # 1. Reflectance Post-Processing
             # Indices: Red=13 (680nm), NIR=16 (810nm)
             spec_vals = data['spec']
+            
+            reflectance = None
+            if spec_vals is not None:
+                self.publish_irradiance(spec_vals)
+                reflectance = self.compute_relfectance(spec_vals)
+
+                if reflectance is not None:
+                    ref_msg = Float32MultiArray()
+                    ref_msg.data = reflectance
+                    self.reflectance_pub.publish(ref_msg)
+
+            if len(spec_vals) < 18:
+                self.get_logger().warn(f"Received incomplete spectrometer data: {len(spec_vals)} channels")
+            else:
+                total_intensity = sum(data)
+                ti_msg = Float32()
+                ti_msg.data = float(total_intensity)
+                self.total_irradiance_pub.publish(ti_msg)
+
+                red = data[13] # 680nm
+                nir = data[16] # 810nm
+                if (nir + red) != 0:
+                    ndvi = (nir - red) / (nir + red)
+                    ndvi_msg = Float32()
+                    ndvi_msg.data = float(ndvi)
+                    self.ndvi_pub.publish(ndvi_msg)
+                
+                peak_idx = max(range(len(spec_vals)), key=lambda idx: spec_vals[idx])
+                peak_wavelength = self.spectrometer_wavelengths[peak_idx]
+                self.get_logger().info(f"Peak Wavelength: {peak_wavelength}nm, NDVI: {ndvi:.3f}, Total Intensity: {total_intensity:.2f}")
+            
             # --- Convert ---
             cam0_raw = self.br.imgmsg_to_cv2(data['cam0'], desired_encoding='passthrough').copy()
             cam1_raw = self.br.imgmsg_to_cv2(data['cam1'], desired_encoding='passthrough').copy()
