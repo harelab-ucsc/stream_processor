@@ -71,22 +71,22 @@ class SyncNode(Node):
         self.spectrometer_wavelengths = [
             410,
             435,
-            460,
+            460,  # ind 2: nearest to 450nm filter
             485,
             510,
             535,
             560,
             585,
             645,
-            705,
+            705,  # ind 9: nearest to 695nm filter
             900,
             940,
             610,
             680,
-            730,
+            730,  # ind 14: nearest to 735nm filter
             760,
             810,
-            860,
+            860,  # ind 17: nearest to 850nm filter
         ]
         self.current_raw_spec = None
         self.panel_calib = None
@@ -451,12 +451,6 @@ class SyncNode(Node):
         # Push to save executor for saving
         self.save_executor.submit(self.post_process_and_save, data, stamp)
 
-    # Helper function for post_process_and_save:
-    def publish_irradiance(self, spec_vals):
-        irr_msg = Float32MultiArray()
-        irr_msg.data = [float(x) for x in spec_vals]
-        self.irradiance_pub.publish(irr_msg)
-
     def compute_reflectance(self, spec_vals):
         if self.panel_calib is None:
             return None
@@ -492,8 +486,8 @@ class SyncNode(Node):
 
             reflectance = None
             if spec is not None:
-                self.publish_irradiance(spec)
-                reflectance = self.compute_relfectance(spec)
+                # self.publish_irradiance(spec)
+                reflectance = self.compute_reflectance(spec)
 
                 if reflectance is not None:
                     ref_msg = Float32MultiArray()
@@ -509,8 +503,8 @@ class SyncNode(Node):
                 ti_msg.data = float(total_intensity)
                 self.total_irradiance_pub.publish(ti_msg)
 
-                red = data[13]  # 680nm
-                nir = data[16]  # 810nm
+                red = spec[13]  # 680nm
+                nir = spec[16]  # 810nm
                 if (nir + red) != 0:
                     ndvi = (nir - red) / (nir + red)
                     ndvi_msg = Float32()
@@ -538,11 +532,12 @@ class SyncNode(Node):
 
             # --- Correct cam0 (MONO imagery for multispec) only ---
             corrected_cam0 = []
-            for img in cam0_list:
-                if spec is not None and len(spec) > 13:
-                    red_irr = spec[13]
-                    if red_irr > 0:
-                        img = img.astype(np.float32) / red_irr
+            band_list = [2, 9, 14, 17]
+            for i, img in enumerate(cam0_list):
+                if spec is not None:
+                    irr = spec[band_list[i]]
+                    if irr > 0:
+                        img = img.astype(np.float32) / irr
                 corrected_cam0.append(img)
 
             # 2. Convert pose lat-lon -> UTM
