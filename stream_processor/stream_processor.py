@@ -40,6 +40,13 @@ qos_profile = QoSProfile(
     history=HistoryPolicy.KEEP_ALL,  # Keep all messages
 )
 
+CAM0_ALIGNMENT = {
+        0: ("BP340_UV", 0),    # 340nm -> Proxy Index 0 (410nm)
+        1: ("BP450_Blue", 2),  # 450nm -> Index 2 (460nm)
+        2: ("BP695_Red", 9),   # 695nm -> Index 9 (705nm)
+        3: ("BP735_Edge", 14)  # 735nm -> Index 14 (730nm)
+    }
+
 
 def deg_to_dms_rational(deg_float):
     """Convert decimal degrees to EXIF-friendly rational DMS."""
@@ -532,13 +539,23 @@ class SyncNode(Node):
 
             # --- Correct cam0 (MONO imagery for multispec) only ---
             corrected_cam0 = []
-            band_list = [2, 9, 14, 17]
-            for i, img in enumerate(cam0_list):
-                if spec is not None:
-                    irr = spec[band_list[i]]
-                    if irr > 0:
-                        img = img.astype(np.float32) / irr
-                corrected_cam0.append(img)
+            for i, sub_img in enumerate(cam0_list):
+                filter_name, spec_idx = self.CAM0_ALIGNMENT[i]
+
+                # --- RADIOMETRIC CORRECTION ---
+                # digital_counts / relevant_irradiance (from spectrometer)
+                if spec and len(spec) > spec_idx:
+                    irr = spec[spec_idx]
+                else:
+                    irr = 1.0
+
+                if irr > 0:
+                    # Convert to float for correction, then save as uint8
+                    corrected = (sub_img.astype(np.float32) / irr)
+                    final_img = np.clip(corrected, 0, 255).astype(np.uint8)
+                else:
+                    final_img = sub_img
+                corrected_cam0.append(final_img)
 
             # 2. Convert pose lat-lon -> UTM
             # returns easting, northing, zone number, zone letter
