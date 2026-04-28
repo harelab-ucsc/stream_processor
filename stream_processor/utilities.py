@@ -3,9 +3,6 @@
 from scipy.spatial.transform import Rotation as R
 import numpy as np
 
-# import sys
-# import cv2
-
 # import apriltag
 
 
@@ -17,7 +14,7 @@ def dimIterProd(mtx_dims):
 
 
 def array_flatten(mtx, mtx_dims):
-    """mtx is m x n (rectangular, nonsparse) array"""
+    """Flatten an m x n (rectangular, nonsparse) array into a 1-D list."""
     val = []
     for i in range(mtx_dims[0]):
         for j in range(mtx_dims[1]):
@@ -26,7 +23,7 @@ def array_flatten(mtx, mtx_dims):
 
 
 def array_expand(mtx, mtx_dims):
-    """mtx is mn x 1 (m*n dimensional vector)"""
+    """Expand an mn x 1 vector back into an m x n nested list."""
     tmp = []
     tmps = []
     row = 0
@@ -47,6 +44,7 @@ def matrix_list_converter(mtx: list, mtx_dims):
 
 
 def string_list_converter(foo):
+    # print('foo: ', foo)
     if isinstance(foo, str):
         if foo != "None":
             val = []
@@ -72,8 +70,8 @@ def string_list_converter(foo):
 
 
 def poseRowToTransform(pose):
-    """Given a row from the db, produce a 4x4 homogeneous transform
-    Return as a 4x4 nparray"""
+    # Given a row from the db, produce a 4x4 homogeneous transform
+    # Return as a 4x4 nparray
     rot = R.from_quat(pose[3:7]).as_matrix()
     t = np.array([pose[0], pose[1], pose[2]])
     T = np.eye(4)

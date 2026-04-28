@@ -3,10 +3,7 @@
 import sqlite3
 import math
 
-# import io
 import pandas as pd
-
-# import numpy as np
 
 
 def bytesIOconverter(bytes_io_object):
@@ -19,9 +16,7 @@ class dbConnector:
         # sqlite3.register_adapter(np.ndarray, self.adapt_array)
         # Converts TEXT to np.array when selecting
         # sqlite3.register_converter("array", self.convert_array)
-        self.db_c = sqlite3.connect(
-            f"{db_name}.db", detect_types=sqlite3.PARSE_DECLTYPES
-        )
+        self.db_c = sqlite3.connect(f"{db_name}.db", detect_types=sqlite3.PARSE_DECLTYPES)
         self.db_c.create_function("sqrt", 1, math.sqrt)
         self.db_c.create_function("pow", 2, self.sqlite_power)
 
@@ -29,24 +24,25 @@ class dbConnector:
         # print(db_name, sensor)
         self.setupTable(
             f"{sensor}_images_{db_name}",
-            "x REAL, y REAL, z REAL, q REAL, u REAL, a REAL, t REAL, \
-            rtk_status INTEGER, ins_status INTEGER, radalt REAL, \
-            save_loc TEXT UNIQUE, pps_time REAL",
+            "x REAL, y REAL, z REAL, q REAL, u REAL, a REAL, t REAL, "
+            "rtk_status INTEGER, ins_status INTEGER, radalt REAL, "
+            "save_loc TEXT UNIQUE, pps_time REAL",
         )
         self.setupTable(
             f"clicks_{db_name}",
-            "x REAL, y REAL, zone_num INTEGER, zone_letter TEXT, z REAL, \
-            z_msl REAL, tag INTEGER",
+            "x REAL, y REAL, zone_num INTEGER, zone_letter TEXT, "
+            "z REAL, z_msl REAL, tag INTEGER",
         )
         self.setupTable(
             f"parameters_{db_name}",
-            "sensorID TEXT UNIQUE, resolution array, intrinsics1 array, \
-            intrinsics2 array, extrinsics array",
+            "sensorID TEXT UNIQUE, resolution array, intrinsics1 array, "
+            "intrinsics2 array, extrinsics array",
         )
         self.setupTable(
             f"ins_data_{db_name}",
-            "x REAL, y REAL, z REAL, q REAL, u REAL, a REAL, t REAL, insStatus\
-            INTEGER, hdwStatus INTEGER, time1 REAL UNIQUE, time2 REAL",
+            "x REAL, y REAL, z REAL, q REAL, u REAL, a REAL, t REAL, "
+            "insStatus INTEGER, hdwStatus INTEGER, "
+            "time1 REAL UNIQUE, time2 REAL",
         )
 
     def sqlite_power(self, x, n):
@@ -54,8 +50,9 @@ class dbConnector:
 
     def checkForTable(self, table_name):
         cur = self.db_c.cursor()
-        res = cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' \
-            AND name='{table_name}';")
+        res = cur.execute(
+            f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}';"
+        )
         if len(res.fetchall()) == 0:
             return False
         return True
@@ -94,8 +91,9 @@ class dbConnector:
 
     def setupTable(self, table_name, cols):
         cur = self.db_c.cursor()
-        res = cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' \
-            AND name='{table_name}';")
+        res = cur.execute(
+            f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}';"
+        )
         if len(res.fetchall()) == 0:
             cur.execute(f"CREATE TABLE {table_name}({cols})")
             self.db_c.commit()
@@ -107,18 +105,15 @@ class dbConnector:
 
     def insertIgnoreInto(self, table_name, cols, vals):
         cur = self.db_c.cursor()
-        cur.execute(f"INSERT OR IGNORE INTO {table_name}({cols}) \
-            VALUES({vals})")
+        cur.execute(f"INSERT OR IGNORE INTO {table_name}({cols}) VALUES({vals})")
         self.db_c.commit()
 
     def insertClicks(self, table_name, vals):
         cur = self.db_c.cursor()
-        # cur.executemany(f"INSERT INTO {table_name} (x, y, health) \
-        # VALUES(?,?,?)", vals)
+        # cur.executemany(f"INSERT INTO {table_name} (x, y, health) VALUES(?,?,?)", vals)
         cur.executemany(
-            f"INSERT INTO {table_name} \
-            (x, y, zone_num, zone_letter, z, z_msl, tag) \
-            VALUES(?,?,?,?,?,?,?)",
+            f"INSERT INTO {table_name} "
+            "(x, y, zone_num, zone_letter, z, z_msl, tag) VALUES(?,?,?,?,?,?,?)",
             vals,
         )
         self.db_c.commit()
@@ -126,8 +121,7 @@ class dbConnector:
     def updateDataDetections(self, table_name, vals):
         cur = self.db_c.cursor()
         cur.executemany(
-            f"UPDATE {table_name} SET blob_center_x = ?, blob_center_y = ? \
-            WHERE img_loc = ?;",
+            f"UPDATE {table_name} SET blob_center_x = ?, blob_center_y = ? WHERE img_loc = ?;",
             vals,
         )
         self.db_c.commit()
@@ -145,7 +139,5 @@ class dbConnector:
         num_columns = len(cols.split(","))
         # Build the SQL statement to insert rows
         placeholders = ",".join(["?" for _ in range(num_columns)])
-        cur.executemany(
-            f"INSERT INTO {table_name}({cols}) VALUES({placeholders})", vals
-        )
+        cur.executemany(f"INSERT INTO {table_name}({cols}) VALUES({placeholders})", vals)
         self.db_c.commit()

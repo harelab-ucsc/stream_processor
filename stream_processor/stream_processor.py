@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
+"""
+ROS 2 Sync Node based on State Machine Specs.
+
+Flow: Wait for PPS -> Clear State -> Catch All (Cam, Pose, Spec, Radalt)
+-> Stamp/Correct -> Save (Multithreaded).
+"""
 
 import cv2
 import os
 import threading
-import sqlite3
 import time
 import stat
 import csv
@@ -18,34 +23,50 @@ import numpy as np
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, qos_profile_sensor_data
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 from collections import deque
 from std_srvs.srv import Trigger
 from builtin_interfaces.msg import Time as BuiltinTime
-from inertial_sense_ros2.msg import DIDINS2
 
 from PIL import Image as Img
 
 # Custom code imports
-from . import dbConnector
+from .dbConnector import dbConnector
 from . import utilities
-from custom_msgs.msg import AltSNR
-from as7265x_at_msgs.msg import AS7265xCal
+from .spectral_correct import process_cam0, process_cam1
 
-# Create a custom QoSProfile to prevent message drops
+# Tolerant imports — these message types live in repos that may not be
+# installed in test/CI containers (inertial_sense_ros2, custom_msgs).
+# Subscriptions are skipped when their msg types aren't importable, and
+# all_caught() naturally only requires inputs we actually subscribed to.
+try:
+    from inertial_sense_ros2.msg import DIDINS2
+except ImportError:
+    DIDINS2 = None
+try:
+    from custom_msgs.msg import AltSNR
+except ImportError:
+    AltSNR = None
+try:
+    from as7265x_at_msgs.msg import AS7265xCal
+except ImportError:
+    AS7265xCal = None
+
+# RELIABLE QoS for navigation/sensor data — these topics use RELIABLE publishers
+# and must not be dropped (INS, radalt, spectrometer, PPS).
 qos_profile = QoSProfile(
-    reliability=ReliabilityPolicy.RELIABLE,  # Reliable delivery
-    history=HistoryPolicy.KEEP_ALL,  # Keep all messages
+    reliability=ReliabilityPolicy.RELIABLE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
 )
 
-CAM0_ALIGNMENT = {
-        0: ("BP340_UV", 0),    # 340nm -> Proxy Index 0 (410nm)
-        1: ("BP450_Blue", 2),  # 450nm -> Index 2 (460nm)
-        2: ("BP695_Red", 9),   # 695nm -> Index 9 (705nm)
-        3: ("BP735_Edge", 14)  # 735nm -> Index 14 (730nm)
-    }
+# BEST_EFFORT QoS for camera images — camera drivers publish with SensorDataQoS
+# (BEST_EFFORT). A RELIABLE subscription against a BEST_EFFORT publisher is a
+# DDS QoS incompatibility; no messages flow. For image data, BEST_EFFORT is
+# correct: a missed frame is recovered on the next PPS cycle.
+img_qos = qos_profile_sensor_data
 
 
 def deg_to_dms_rational(deg_float):
@@ -102,9 +123,7 @@ class SyncNode(Node):
             os.path.expanduser("~"), self.get_parameter("dir_name").value
         )
         os.makedirs(db_path, exist_ok=True)
-        self.dbc = dbConnector.dbConnector(
-            os.path.join(db_path, self.get_parameter("db_name").value)
-        )
+        self.dbc = dbConnector(os.path.join(db_path, self.get_parameter("db_name").value))
         self.dbc.boot(self.get_parameter("db_name").value, self.sensor_id)
         os.chmod(
             os.path.join(self.dir_name, self.db_name + ".db"),
@@ -112,13 +131,11 @@ class SyncNode(Node):
         )
         time.sleep(1)
 
-        # # sensor calibration parameters
-        # self.declare_parameter("sensors_yaml",
-        #    "sensor_params/birdsEyeSensorParams.yaml")
-        # self.sensors_yaml = self.get_parameter("sensors_yaml").value
-        # self.sensors_yaml = os.path.join(
-        #    os.path.expanduser('~'), self.sensors_yaml)
-        # self.calibUptake()
+        # sensor calibration parameters
+        self.declare_parameter("sensors_yaml", "sensor_params/birdsEyeSensorParams.yaml")
+        self.sensors_yaml = self.get_parameter("sensors_yaml").value
+        self.sensors_yaml = os.path.join(os.path.expanduser("~"), self.sensors_yaml)
+        self.calibUptake()
 
         self.declare_parameter("clicks_csv", "catch/data.csv")
         # self.declare_parameter("clicks_csv", "catch/data__2025_01_10.csv")
@@ -164,31 +181,45 @@ class SyncNode(Node):
             self.pps_cb, qos_profile=qos_profile
         )
 
-        # 2. Camera Streams
+        # 2. Camera Streams (BEST_EFFORT to match camera driver publishers)
         self.create_subscription(
             Image, "/cam0/camera_node/image_raw",
-            self.cam0_cb, qos_profile=qos_profile
+            self.cam0_cb, qos_profile=img_qos
         )
         self.create_subscription(
             Image, "/cam1/camera_node/image_raw",
-            self.cam1_cb, qos_profile=qos_profile
+            self.cam1_cb, qos_profile=img_qos
         )
 
         # 3. Navigation & Environment
-        self.create_subscription(
-            DIDINS2, "/ins_quat_uvw_lla",
-            self.ins_cb, qos_profile=qos_profile
-        )
-        self.create_subscription(
-            AltSNR, "/rad_altitude",
-            self.radalt_cb, qos_profile=qos_profile
-        )
+        if DIDINS2 is not None:
+            self.caught_data["pose"] = None
+            self.create_subscription(
+                DIDINS2, "/ins_quat_uvw_lla",
+                self.ins_cb, qos_profile=qos_profile
+            )
+        else:
+            self.get_logger().warn("inertial_sense_ros2 not available — INS subscription disabled")
+        if AltSNR is not None:
+            self.caught_data["radalt"] = None
+            self.create_subscription(
+                AltSNR, "/rad_altitude",
+                self.radalt_cb, qos_profile=qos_profile
+            )
+        else:
+            self.get_logger().warn("custom_msgs not available — radalt subscription disabled")
 
         # 4. AS7265x Spectrometer (For Reflectance)
-        self.create_subscription(
-            AS7265xCal, "/as7265x/calibrated_values",
-            self.spec_cb, qos_profile=qos_profile
-        )
+        if AS7265xCal is not None:
+            self.caught_data["spec"] = None
+            self.create_subscription(
+                AS7265xCal, "/as7265x/calibrated_values",
+                self.spec_cb, qos_profile=qos_profile
+            )
+        else:
+            self.get_logger().warn(
+                "as7265x_at_msgs not available — spectrometer subscription disabled"
+            )
 
         self.get_logger().info("Sync Node Started. Waiting for PPS Trigger.")
 
@@ -307,9 +338,7 @@ class SyncNode(Node):
     # spectrometer reading for panel calibration instead of relying on
     # PPS-cycle state that may already have been cleared.
     def capture_panel_callback(self, request, response):
-        """Stores the current spectral reading
-        as the white reference (100% reflectance)"""
-
+        """Store the current spectral reading as the white reference (100% reflectance)."""
         if self.current_raw_spec is None:
             response.success = False
             response.message = "No data received from sensor yet."
@@ -403,33 +432,33 @@ class SyncNode(Node):
         self.assign_to_job("spec", msg)
 
     # --- 3. Processing and Saving ---
-    def split_camarray(self, img, num_cams=4):
-        h, w = img.shape[:2]
-        sub_w = w // num_cams
-        return [img[:, i * sub_w:(i + 1) * sub_w] for i in range(num_cams)]
-
     def image_save(self, img, filename, pose):
-        if self.img_format == ".png":
+        if self.img_format in (".tiff", ".tif"):
+            # TIFF stores float32 natively — no scaling, full reflectance range
+            # preserved for cam0. cv2.imwrite handles uint8/uint16/float32.
+            cv2.imwrite(filename, img)
+        elif self.img_format == ".png":
+            # PNG cannot store float32. Scale to uint16 so the file is viewable;
+            # use TIFF if you need to preserve the float32 reflectance range.
+            if img.dtype == np.float32:
+                img = np.clip(img * 65535.0, 0, 65535).astype(np.uint16)
             cv2.imwrite(filename, img)
         elif self.img_format == ".jpg":
-            # Convert OpenCV BGR (or RGB) NumPy image to PIL RGB
-            pil_img = Img.fromarray(img)  # For grayscale or already-RGB
-
-            lla = pose.lla
-            gps_ifd = {
-                piexif.GPSIFD.GPSLatitudeRef: "N" if lla[0] >= 0 else "S",
-                piexif.GPSIFD.GPSLatitude: deg_to_dms_rational(abs(lla[0])),
-                piexif.GPSIFD.GPSLongitudeRef: "E" if lla[1] >= 0 else "W",
-                piexif.GPSIFD.GPSLongitude: deg_to_dms_rational(abs(lla[1])),
-                piexif.GPSIFD.GPSAltitudeRef: 0,
-                piexif.GPSIFD.GPSAltitude: (int(lla[2] * 100), 100),
-            }
-
-            exif_dict = {"GPS": gps_ifd}
-            exif_bytes = piexif.dump(exif_dict)
-
-            # Save directly with EXIF
-            pil_img.save(filename, exif=exif_bytes, format="JPEG", quality=95)
+            pil_img = Img.fromarray(img)
+            if pose is not None:
+                lla = pose.lla
+                gps_ifd = {
+                    piexif.GPSIFD.GPSLatitudeRef: "N" if lla[0] >= 0 else "S",
+                    piexif.GPSIFD.GPSLatitude: deg_to_dms_rational(abs(lla[0])),
+                    piexif.GPSIFD.GPSLongitudeRef: "E" if lla[1] >= 0 else "W",
+                    piexif.GPSIFD.GPSLongitude: deg_to_dms_rational(abs(lla[1])),
+                    piexif.GPSIFD.GPSAltitudeRef: 0,
+                    piexif.GPSIFD.GPSAltitude: (int(lla[2] * 100), 100),
+                }
+                exif_bytes = piexif.dump({"GPS": gps_ifd})
+                pil_img.save(filename, exif=exif_bytes, format="JPEG", quality=95)
+            else:
+                pil_img.save(filename, format="JPEG", quality=95)
 
     def is_complete(self, job):
         return all(v is not None for v in job["data"].values())
@@ -524,8 +553,12 @@ class SyncNode(Node):
 
     def post_process_and_save(self, data, stamp):
         """
-        Implements MicaSense-style correction using AS7265x data
-        before saving to disk and SQL.
+        Apply MicaSense-style correction using AS7265x data, then save.
+
+        Single-pass split + per-band reflectance (cam0) / debayer (cam1) is
+        delegated to the C++ extension `spectral_correct`. The spectrometer-
+        derived publishers (reflectance, NDVI, total intensity, peak band)
+        run alongside, when AS7265x data is present.
         """
         try:
             pose = data["pose"]
@@ -555,16 +588,37 @@ class SyncNode(Node):
                 if spec and len(spec) > spec_idx:
                     irr = spec[spec_idx]
                 else:
-                    irr = 1.0
+                    total_intensity = sum(spec)
+                    ti_msg = Float32()
+                    ti_msg.data = float(total_intensity)
+                    self.total_irradiance_pub.publish(ti_msg)
 
-                if irr > 0:
-                    # Convert to float for correction, then save as uint8
-                    corrected = (sub_img.astype(np.float32) / irr)
-                    final_img = np.clip(corrected, 0, 255).astype(np.uint8)
-                else:
-                    final_img = sub_img
-                corrected_cam0.append(final_img)
+                    red = spec[13]   # 680 nm
+                    nir = spec[16]   # 810 nm
+                    ndvi = None
+                    if (nir + red) != 0:
+                        ndvi = (nir - red) / (nir + red)
+                        ndvi_msg = Float32()
+                        ndvi_msg.data = float(ndvi)
+                        self.ndvi_pub.publish(ndvi_msg)
 
+                    peak_idx = max(range(len(spec)), key=lambda idx: spec[idx])
+                    peak_wavelength = self.spectrometer_wavelengths[peak_idx]
+                    ndvi_str = f"{ndvi:.3f}" if ndvi is not None else "n/a"
+                    self.get_logger().info(
+                        f"Peak Wavelength: {peak_wavelength}nm, NDVI: {ndvi_str}, "
+                        f"Total Intensity: {total_intensity:.2f}"
+                    )
+
+            # 2. Single-pass split + per-band reflectance (cam0) / debayer (cam1)
+            # via the C++ extension. Per-slice cam0 divisor uses CAM0_ALIGNMENT
+            # (slice 0->spec[0], 1->spec[2], 2->spec[9], 3->spec[14]).
+            cam0_raw = self.br.imgmsg_to_cv2(data["cam0"], desired_encoding="passthrough")
+            cam1_raw = self.br.imgmsg_to_cv2(data["cam1"], desired_encoding="passthrough")
+            spec_np = np.asarray(spec, dtype=np.float32) if spec is not None else None
+
+            corrected_cam0 = process_cam0(cam0_raw, spec_np)   # 4 × float32 (H, W/4)
+            cam1_rgb_list = process_cam1(cam1_raw)             # 4 × RGB    (H, W/4, 3)
             # Convert pose lat-lon -> UTM
             # returns easting, northing, zone number, zone letter
             u = utm.from_latlon(pose.lla[0], pose.lla[1])
@@ -573,15 +627,14 @@ class SyncNode(Node):
             paths = []
             for i, img in enumerate(corrected_cam0):
                 filename = os.path.join(
-                    self.dir_name, f"cam0_{i}_{time_str}.{self.img_format}"
+                    self.dir_name, f"cam0_{i}_{time_str}{self.img_format}"
                 )
                 paths.append(filename)
                 self.image_save(img, filename, pose)
 
-            for i, img in enumerate(cam1_list):
-                img = cv2.cvtColor(img, cv2.COLOR_BAYER_BG2RGB)
+            for i, img in enumerate(cam1_rgb_list):
                 filename = os.path.join(
-                    self.dir_name, f"cam1_{i}_{time_str}.{self.img_format}"
+                    self.dir_name, f"cam1_{i}_{time_str}{self.img_format}"
                 )
                 paths.append(filename)
                 self.image_save(img, filename, pose)
