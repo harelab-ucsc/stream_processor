@@ -26,8 +26,7 @@ class dbConnector:
             f"{sensor}_images_{db_name}",
             "x REAL, y REAL, z REAL, q REAL, u REAL, a REAL, t REAL, "
             "rtk_status INTEGER, ins_status INTEGER, radalt REAL, "
-            "save_loc TEXT UNIQUE, cam_time1 REAL, cam_time2 REAL, "
-            "ins_time1 REAL, ins_time2 REAL",
+            "save_loc TEXT UNIQUE, pps_time REAL",
         )
         self.setupTable(
             f"clicks_{db_name}",

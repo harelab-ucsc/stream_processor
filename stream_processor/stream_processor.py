@@ -6,23 +6,9 @@ Flow: Wait for PPS -> Clear State -> Catch All (Cam, Pose, Spec, Radalt)
 -> Stamp/Correct -> Save (Multithreaded).
 """
 
-import rclpy
-from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, qos_profile_sensor_data
-from sensor_msgs.msg import Image
-from builtin_interfaces.msg import Time as BuiltinTime
-
-try:
-    from inertial_sense_ros2.msg import DIDINS2
-except ImportError:
-    DIDINS2 = None
-
 import cv2
 import os
 import threading
-import numpy as np
-from cv_bridge import CvBridge
-
 import time
 import stat
 import csv
@@ -30,15 +16,35 @@ import yaml
 import utm
 import glob2
 import piexif
-from PIL import Image as Img
 import concurrent.futures
 import copy
+
+import numpy as np
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, qos_profile_sensor_data
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image
+from std_msgs.msg import Float32, Float32MultiArray
+from std_srvs.srv import Trigger
+from builtin_interfaces.msg import Time as BuiltinTime
+
+from PIL import Image as Img
 
 # Custom code imports
 from .dbConnector import dbConnector
 from . import utilities
 from .spectral_correct import process_cam0, process_cam1
 
+# Tolerant imports — these message types live in repos that may not be
+# installed in test/CI containers (inertial_sense_ros2, custom_msgs).
+# Subscriptions are skipped when their msg types aren't importable, and
+# all_caught() naturally only requires inputs we actually subscribed to.
+try:
+    from inertial_sense_ros2.msg import DIDINS2
+except ImportError:
+    DIDINS2 = None
 try:
     from custom_msgs.msg import AltSNR
 except ImportError:
@@ -48,20 +54,18 @@ try:
 except ImportError:
     AS7265xCal = None
 
-
 # RELIABLE QoS for navigation/sensor data — these topics use RELIABLE publishers
 # and must not be dropped (INS, radalt, spectrometer, PPS).
 qos_profile = QoSProfile(
-    reliability=ReliabilityPolicy.RELIABLE,  # Reliable delivery
-    history=HistoryPolicy.KEEP_LAST,  # Keep last N messages
+    reliability=ReliabilityPolicy.RELIABLE,
+    history=HistoryPolicy.KEEP_LAST,
     depth=10,
 )
 
 # BEST_EFFORT QoS for camera images — camera drivers publish with SensorDataQoS
 # (BEST_EFFORT). A RELIABLE subscription against a BEST_EFFORT publisher is a
-# DDS QoS incompatibility; no messages flow and the mismatch adds protocol overhead.
-# For image data, BEST_EFFORT is correct: a missed frame is recovered on the
-# next PPS cycle rather than causing backpressure.
+# DDS QoS incompatibility; no messages flow. For image data, BEST_EFFORT is
+# correct: a missed frame is recovered on the next PPS cycle.
 img_qos = qos_profile_sensor_data
 
 
@@ -92,7 +96,32 @@ class SyncNode(Node):
         self.dir_name = os.path.join(os.path.expanduser("~"), self.dir_name)
         self.dirCheck()
 
-        db_path = os.path.join(os.path.expanduser("~"), self.get_parameter("dir_name").value)
+        self.spectrometer_wavelengths = [
+            410,
+            435,
+            460,  # ind 2: nearest to 450nm filter
+            485,
+            510,
+            535,
+            560,
+            585,
+            645,
+            705,  # ind 9: nearest to 695nm filter
+            900,
+            940,
+            610,
+            680,
+            730,  # ind 14: nearest to 735nm filter
+            760,
+            810,
+            860,  # ind 17: nearest to 850nm filter
+        ]
+        self.current_raw_spec = None
+        self.panel_calib = None
+
+        db_path = os.path.join(
+            os.path.expanduser("~"), self.get_parameter("dir_name").value
+        )
         os.makedirs(db_path, exist_ok=True)
         self.dbc = dbConnector(os.path.join(db_path, self.get_parameter("db_name").value))
         self.dbc.boot(self.get_parameter("db_name").value, self.sensor_id)
@@ -111,7 +140,8 @@ class SyncNode(Node):
         self.declare_parameter("clicks_csv", "catch/data.csv")
         # self.declare_parameter("clicks_csv", "catch/data__2025_01_10.csv")
         self.clicks_csv = self.get_parameter("clicks_csv").value
-        self.clicks_csv = os.path.join(os.path.expanduser("~"), self.clicks_csv)
+        self.clicks_csv = os.path.join(
+            os.path.expanduser("~"), self.clicks_csv)
         self.csv_read()
 
         # --- INS Bitmasks ---
@@ -134,28 +164,35 @@ class SyncNode(Node):
 
         # --- Subscriptions ---
         # 1. PPS Trigger (The heartbeat of the state machine)
-        self.create_subscription(BuiltinTime, "/pps/time", self.pps_cb, qos_profile=qos_profile)
+        self.create_subscription(
+            BuiltinTime, "/pps/time",
+            self.pps_cb, qos_profile=qos_profile
+        )
 
         # 2. Camera Streams (BEST_EFFORT to match camera driver publishers)
         self.create_subscription(
-            Image, "/cam0/camera_node/image_raw", self.cam0_cb, qos_profile=img_qos
+            Image, "/cam0/camera_node/image_raw",
+            self.cam0_cb, qos_profile=img_qos
         )
         self.create_subscription(
-            Image, "/cam1/camera_node/image_raw", self.cam1_cb, qos_profile=img_qos
+            Image, "/cam1/camera_node/image_raw",
+            self.cam1_cb, qos_profile=img_qos
         )
 
         # 3. Navigation & Environment
         if DIDINS2 is not None:
             self.caught_data["pose"] = None
             self.create_subscription(
-                DIDINS2, "/ins_quat_uvw_lla", self.ins_cb, qos_profile=qos_profile
+                DIDINS2, "/ins_quat_uvw_lla",
+                self.ins_cb, qos_profile=qos_profile
             )
         else:
             self.get_logger().warn("inertial_sense_ros2 not available — INS subscription disabled")
         if AltSNR is not None:
             self.caught_data["radalt"] = None
             self.create_subscription(
-                AltSNR, "/rad_altitude", self.radalt_cb, qos_profile=qos_profile
+                AltSNR, "/rad_altitude",
+                self.radalt_cb, qos_profile=qos_profile
             )
         else:
             self.get_logger().warn("custom_msgs not available — radalt subscription disabled")
@@ -164,25 +201,51 @@ class SyncNode(Node):
         if AS7265xCal is not None:
             self.caught_data["spec"] = None
             self.create_subscription(
-                AS7265xCal, "as7265x/calibrated_values", self.spec_cb, qos_profile=qos_profile
+                AS7265xCal, "/as7265x/calibrated_values",
+                self.spec_cb, qos_profile=qos_profile
             )
         else:
             self.get_logger().warn(
                 "as7265x_at_msgs not available — spectrometer subscription disabled"
             )
 
-        self.get_logger().info("Sync Node Initialized. Waiting for PPS Trigger...")
+        self.get_logger().info("Sync Node Started. Waiting for PPS Trigger.")
+
+        # --- Publishers ---
+        # From micasense_spectrometer_bridge.py:
+        self.irradiance_pub = self.create_publisher(
+            Float32MultiArray, "spectrometer/irradiance", 10
+        )
+        self.reflectance_pub = self.create_publisher(
+            Float32MultiArray, "spectrometer/reflectance", 10
+        )
+
+        # From spectrometer_processor.py:
+        self.ndvi_pub = self.create_publisher(Float32, "spectrometer/ndvi", 10)
+        self.total_irradiance_pub = self.create_publisher(
+            Float32, "spectrometer/total_intensity", 10
+        )
+
+        # --- Services ---
+        self.capture_panel_srv = self.create_service(
+            Trigger, "spectrometer/capture_panel", self.capture_panel_callback
+        )
 
         # --- Multithreading setup ---
-        self.save_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self.save_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=4)
 
     def dirCheck(self):
         if not os.path.isdir(self.dir_name):
-            self.get_logger().info(f"{self.dir_name} does not exist in home dir... Generating.")
+            self.get_logger().info(
+                f"{self.dir_name} does not exist in home dir... Generating."
+            )
             try:
                 os.makedirs(self.dir_name, exist_ok=True)
             except FileExistsError:
-                self.get_logger().info(f"{self.dir_name} exists now... Someone beat me to it.")
+                self.get_logger().info(
+                    f"{self.dir_name} exists now... Someone beat me to it."
+                )
         else:
             self.get_logger().info(f"{self.dir_name} exists...")
             self.clear_dir()
@@ -195,29 +258,36 @@ class SyncNode(Node):
                 for file in files:
                     if os.path.isfile(file):
                         os.remove(file)
-                self.get_logger().info(f"All files in {self.dir_name} deleted successfully.\n")
+                self.get_logger().info(
+                    f"All files in {self.dir_name} deleted successfully.\n"
+                )
             else:
                 self.get_logger().info(f"No files in {self.dir_name}.\n")
         except Exception as e:
-            self.get_logger().info(f"Error occurred while clearing {self.dir_name} files: {e}.\n")
+            self.get_logger().info(
+                f"Error occurred while clearing {self.dir_name} files: {e}.\n"
+            )
 
     def csv_read(self):
-        self.get_logger().info(f"Reading clicks CSV file: {self.clicks_csv}...")
+        self.get_logger().info(f"Reading clicks CSV: {self.clicks_csv}...")
         data = []
         with open(self.clicks_csv) as clicks:
             reader = csv.reader(clicks)
             for line in reader:
-                # breakdown line
-                # self.get_logger().info(f'{line}')
                 # returns easting, northing, zone number, zone letter
                 u = utm.from_latlon(float(line[0]), float(line[1]))
                 tag = int(line[-1][-1])
-                data.append([u[0], u[1], u[2], u[3], float(line[2]), float(line[3]), tag])
+                data.append(
+                    [u[0], u[1], u[2], u[3],
+                     float(line[2]), float(line[3]), tag]
+                )
         self.dbc.insertClicks(f"clicks_{self.db_name}", data)
         self.get_logger().info("...Done reading clicks CSV file.\n")
 
     def calibUptake(self):
-        self.get_logger().info(f"Reading sensor parameters YAML file: {self.sensors_yaml}...")
+        self.get_logger().info(
+            f"Reading sensor parameters YAML file: {self.sensors_yaml}..."
+        )
         devices = [self.sensor_id, "ins", "radalt"]
         res = None
         intr1 = None
@@ -231,8 +301,9 @@ class SyncNode(Node):
                     self.res = data["resolution"]
                     self.K = data["intrinsics"]
                     self.dist = data["distortion_coeffs"]
-                    self.extr = data["T_cam_imu"]  # extrinsics relative to imu base link
-                    self.extr = utilities.matrix_list_converter(self.extr, (4, 4))
+                    self.extr = data["T_cam_imu"]
+                    self.extr = utilities.matrix_list_converter(
+                        self.extr, (4, 4))
                     res = self.res
                     intr1 = self.K
                     intr2 = self.dist
@@ -243,23 +314,51 @@ class SyncNode(Node):
                         data["accelerometer_noise_density"],
                         data["accelerometer_random_walk"],
                     ]
-                    intr2 = [data["gyroscope_noise_density"], data["gyroscope_random_walk"]]
+                    intr2 = [
+                        data["gyroscope_noise_density"],
+                        data["gyroscope_random_walk"],
+                    ]
                     self.putParameters(device, res, intr1, intr2, extr)
                 elif device == "radalt":
                     extr = data["T_rad_imu"]
                     self.putParameters(
-                        device, res, intr1, intr2, utilities.matrix_list_converter(extr, (4, 4))
+                        device,
+                        res,
+                        intr1,
+                        intr2,
+                        utilities.matrix_list_converter(extr, (4, 4)),
                     )
                 res = None
                 intr1 = None
                 intr2 = None
                 extr = None
-        self.get_logger().info("...Done reading sensor parameters YAML file.\n")
+        self.get_logger().info("  Done reading sensor parameters YAML file.\n")
 
-    def putParameters(self, device_key, resolution, intrinsics1, intrinsics2, extrinsics):
+    # From micasense_spectrometer_bridge.py:
+    # Cleaned it up a bit:
+    # Add a persistent current_raw_spec buffer so capture_panel_callback
+    # can always save the latest
+    # spectrometer reading for panel calibration instead of relying on
+    # PPS-cycle state that may already have been cleared.
+    def capture_panel_callback(self, request, response):
+        """Store the current spectral reading as the white reference (100% reflectance)."""
+        if self.current_raw_spec is None:
+            response.success = False
+            response.message = "No data received from sensor yet."
+            return response
+
+        self.panel_calib = list(self.current_raw_spec)
+        response.success = True
+        response.message = (
+            f"Captured panel calibration for {len(self.panel_calib)} bands."
+        )
+        self.get_logger().info(response.message)
+        return response
+
+    def putParameters(self, dev_key, res, intr1, intr2, extr):
         vals = '"'
         cols = "sensorID, resolution, intrinsics1, intrinsics2, extrinsics"
-        valsList = [device_key, resolution, intrinsics1, intrinsics2, extrinsics]
+        valsList = [dev_key, res, intr1, intr2, extr]
         vals += '","'.join([str(x) for x in valsList])
         vals += '"'
         self.dbc.insertIgnoreInto(f"parameters_{self.db_name}", cols, vals)
@@ -268,7 +367,8 @@ class SyncNode(Node):
         params = []
         cols = "sensorID, resolution, intrinsics1, intrinsics2, extrinsics"
         table = f"parameters_{self.db_name}"
-        ret = self.dbc.getFrom(cols, table, cond=f'WHERE sensorID = "{device_key}"')
+        ret = self.dbc.getFrom(cols, table,
+                               cond=f'WHERE sensorID = "{device_key}"')
         for elem in ret:
             for i, item in enumerate(elem):
                 if item == device_key:
@@ -281,24 +381,28 @@ class SyncNode(Node):
         return params
 
     # --- 1. PPS Trigger (State Machine Start) ---
-
     def pps_cb(self, msg: BuiltinTime):
         with self.state_lock:
             # Check for "Big Error" logic from diagram:
             # If we get a NEW PPS but haven't "Caught All" from the last one
-            if any(v is not None for v in self.caught_data.values()) and not self.all_caught():
-                self.get_logger().error(
-                    "BIG ERROR: New PPS received before previous cycle completed!"
-                )
+            if any(v is not None for v in self.caught_data.values()):
+                if not self.all_caught():
+                    self.get_logger().error(
+                        "ERROR: New PPS received before previous cycle end!"
+                    )
+                    for item in self.caught_data:
+                        self.get_logger().info(
+                            f"{item}:{self.caught_data[item]}")
 
             # Clear State
             self.current_pps_stamp = msg
             for key in self.caught_data:
                 self.caught_data[key] = None
-            self.get_logger().info(f"State Cleared. New Sync Cycle: {msg.sec}.{msg.nanosec}")
+            self.get_logger().info(
+                f"State Cleared. New Sync Cycle: {msg.sec}.{msg.nanosec}"
+            )
 
     # --- 2. Data "Catch" Callbacks ---
-
     def cam0_cb(self, msg):
         self.catch("cam0", msg)
 
@@ -308,12 +412,10 @@ class SyncNode(Node):
     def ins_cb(self, msg):
         # Check if Strobed
         if msg.hdw_status & self.HDW_STROBE == self.HDW_STROBE:
-            self.RTK_STATUS = (
-                (msg.ins_status) & self.INS_STATUS_GPS_NAV_FIX_MASK
-            ) >> self.INS_STATUS_GPS_NAV_FIX_OFFSET
-            self.INS_STATUS = (
-                (msg.ins_status) & self.INS_STATUS_SOLUTION_MASK
-            ) >> self.INS_STATUS_SOLUTION_OFFSET
+            tmp = (msg.ins_status) & self.INS_STATUS_GPS_NAV_FIX_MASK
+            self.RTK_STATUS = tmp >> self.INS_STATUS_GPS_NAV_FIX_OFFSET
+            tmp = (msg.ins_status) & self.INS_STATUS_SOLUTION_MASK
+            self.INS_STATUS = tmp >> self.INS_STATUS_SOLUTION_OFFSET
 
             self.catch("pose", msg)
 
@@ -321,8 +423,10 @@ class SyncNode(Node):
         if msg.snr > 13:
             self.catch("radalt", msg.altitude)
 
+    # saves lists in case of a change in msg.values
     def spec_cb(self, msg):
-        self.catch("spec", msg.values)
+        self.current_raw_spec = list(msg.values)
+        self.catch("spec", list(msg.values))
 
     def catch(self, key, data):
         with self.state_lock:
@@ -340,7 +444,6 @@ class SyncNode(Node):
         return all(v is not None for v in self.caught_data.values())
 
     # --- 3. Processing and Saving ---
-
     def image_save(self, img, filename, pose):
         if self.img_format in (".tiff", ".tif"):
             # TIFF stores float32 natively — no scaling, full reflectance range
@@ -355,13 +458,14 @@ class SyncNode(Node):
         elif self.img_format == ".jpg":
             pil_img = Img.fromarray(img)
             if pose is not None:
+                lla = pose.lla
                 gps_ifd = {
-                    piexif.GPSIFD.GPSLatitudeRef: "N" if pose.lla[0] >= 0 else "S",
-                    piexif.GPSIFD.GPSLatitude: deg_to_dms_rational(abs(pose.lla[0])),
-                    piexif.GPSIFD.GPSLongitudeRef: "E" if pose.lla[1] >= 0 else "W",
-                    piexif.GPSIFD.GPSLongitude: deg_to_dms_rational(abs(pose.lla[1])),
+                    piexif.GPSIFD.GPSLatitudeRef: "N" if lla[0] >= 0 else "S",
+                    piexif.GPSIFD.GPSLatitude: deg_to_dms_rational(abs(lla[0])),
+                    piexif.GPSIFD.GPSLongitudeRef: "E" if lla[1] >= 0 else "W",
+                    piexif.GPSIFD.GPSLongitude: deg_to_dms_rational(abs(lla[1])),
                     piexif.GPSIFD.GPSAltitudeRef: 0,
-                    piexif.GPSIFD.GPSAltitude: (int(pose.lla[2] * 100), 100),
+                    piexif.GPSIFD.GPSAltitude: (int(lla[2] * 100), 100),
                 }
                 exif_bytes = piexif.dump({"GPS": gps_ifd})
                 pil_img.save(filename, exif=exif_bytes, format="JPEG", quality=95)
@@ -381,59 +485,117 @@ class SyncNode(Node):
         # Push to save executor for saving
         self.save_executor.submit(self.post_process_and_save, data, stamp)
 
+    def compute_reflectance(self, spec_vals):
+        if self.panel_calib is None:
+            return None
+
+        if len(self.panel_calib) != len(spec_vals):
+            self.get_logger.warn(
+                "Panel calibration length does not match current spectrometer \
+                values. \nSkipping reflectance calculation."
+            )
+            return None
+
+        reflectance = []
+        for sample, panel in zip(spec_vals, self.panel_calib):
+            # Reflectance = Current / Panel_Reference
+            # Assuming the panel is a 1.0 lambertian reflector
+            val = (sample / panel) if panel != 0 else 0.0
+            reflectance.append(float(val))
+        return reflectance
+
     def post_process_and_save(self, data, stamp):
         """
         Apply MicaSense-style correction using AS7265x data, then save.
 
-        Writes the per-slice cam0 reflectance and cam1 RGB images to disk and
-        records a row in the SQLite DB.
+        Single-pass split + per-band reflectance (cam0) / debayer (cam1) is
+        delegated to the C++ extension `spectral_correct`. The spectrometer-
+        derived publishers (reflectance, NDVI, total intensity, peak band)
+        run alongside, when AS7265x data is present.
         """
         try:
             pose = data.get("pose")
+            spec = data.get("spec")
+            time_str = f"{stamp.sec}.{str(stamp.nanosec).rjust(9, '0')}"
+            self.get_logger().info(f"Saving data frame at timestep {time_str}")
 
-            # 1. Single-pass split + per-band reflectance (cam0) / debayer (cam1)
+            # 1. Spectrometer-derived publishers (panel reflectance / NDVI / total)
+            if spec is not None:
+                reflectance = self.compute_reflectance(spec)
+                if reflectance is not None:
+                    ref_msg = Float32MultiArray()
+                    ref_msg.data = reflectance
+                    self.reflectance_pub.publish(ref_msg)
+
+                if len(spec) < 18:
+                    self.get_logger().warn(
+                        f"Got incomplete spectrometer data: {len(spec)} channels"
+                    )
+                else:
+                    total_intensity = sum(spec)
+                    ti_msg = Float32()
+                    ti_msg.data = float(total_intensity)
+                    self.total_irradiance_pub.publish(ti_msg)
+
+                    red = spec[13]   # 680 nm
+                    nir = spec[16]   # 810 nm
+                    ndvi = None
+                    if (nir + red) != 0:
+                        ndvi = (nir - red) / (nir + red)
+                        ndvi_msg = Float32()
+                        ndvi_msg.data = float(ndvi)
+                        self.ndvi_pub.publish(ndvi_msg)
+
+                    peak_idx = max(range(len(spec)), key=lambda idx: spec[idx])
+                    peak_wavelength = self.spectrometer_wavelengths[peak_idx]
+                    ndvi_str = f"{ndvi:.3f}" if ndvi is not None else "n/a"
+                    self.get_logger().info(
+                        f"Peak Wavelength: {peak_wavelength}nm, NDVI: {ndvi_str}, "
+                        f"Total Intensity: {total_intensity:.2f}"
+                    )
+
+            # 2. Single-pass split + per-band reflectance (cam0) / debayer (cam1)
             # via the C++ extension. Per-slice cam0 divisor uses CAM0_ALIGNMENT
             # (slice 0->spec[0], 1->spec[2], 2->spec[9], 3->spec[14]).
             cam0_raw = self.br.imgmsg_to_cv2(data["cam0"], desired_encoding="passthrough")
             cam1_raw = self.br.imgmsg_to_cv2(data["cam1"], desired_encoding="passthrough")
-            spec_vals = data.get("spec")
-            spec_np = np.asarray(spec_vals, dtype=np.float32) if spec_vals is not None else None
+            spec_np = np.asarray(spec, dtype=np.float32) if spec is not None else None
 
-            corrected_cam0 = process_cam0(cam0_raw, spec_np)  # 4 × float32 (H, W/4)
-            cam1_rgb_list = process_cam1(cam1_raw)  # 4 × RGB    (H, W/4, 3)
+            corrected_cam0 = process_cam0(cam0_raw, spec_np)   # 4 × float32 (H, W/4)
+            cam1_rgb_list = process_cam1(cam1_raw)             # 4 × RGB    (H, W/4, 3)
 
-            # 2. Save Images to File
-            time_str = f"{stamp.sec}.{str(stamp.nanosec).rjust(9,'0')}"
+            # 3. Save Images to File
             paths = []
             for i, img in enumerate(corrected_cam0):
-                filename = os.path.join(self.dir_name, f"cam0_{i}_{time_str}{self.img_format}")
+                filename = os.path.join(
+                    self.dir_name, f"cam0_{i}_{time_str}{self.img_format}"
+                )
                 paths.append(filename)
                 self.image_save(img, filename, pose)
 
             for i, img in enumerate(cam1_rgb_list):
-                filename = os.path.join(self.dir_name, f"cam1_{i}_{time_str}{self.img_format}")
+                filename = os.path.join(
+                    self.dir_name, f"cam1_{i}_{time_str}{self.img_format}"
+                )
                 paths.append(filename)
                 self.image_save(img, filename, pose)
 
-            # 3. Save Data Frame to SQL — only when pose (and downstream pose-
-            # derived fields) are available. In test environments without
-            # inertial_sense_ros2/custom_msgs, skip the DB row but keep images.
+            # 4. Save Data Frame to SQL — only when pose is available. In test
+            # environments without inertial_sense_ros2/custom_msgs, skip the
+            # DB row but keep images.
             if pose is not None:
                 u = utm.from_latlon(pose.lla[0], pose.lla[1])
                 paths_str = "|".join(paths)
                 vals = [
-                    u[0],
-                    u[1],
-                    pose.lla[2],
+                    u[0], u[1], pose.lla[2],
                     # quat: scalar-first NED -> scalar-last ENU
-                    pose.qn2b[2],
-                    pose.qn2b[1],
-                    -pose.qn2b[3],
-                    pose.qn2b[0],
+                    pose.qn2b[2], pose.qn2b[1], -pose.qn2b[3], pose.qn2b[0],
                     self.RTK_STATUS,
                     self.INS_STATUS,
                     float(data["radalt"]) if data.get("radalt") is not None else 0.0,
-                    paths_str,
+                    # quote string values so '/' and '|' in paths_str don't
+                    # break the inline SQL VALUES list
+                    '"' + paths_str + '"',
                     time_str,
                 ]
                 val_str = ",".join(map(str, vals))
@@ -442,10 +604,12 @@ class SyncNode(Node):
                     "x, y, z, q, u, a, t, rtk_status, ins_status, radalt, save_loc, pps_time",
                     val_str,
                 )
-            self.get_logger().info(f"Cycle Complete: Saved {len(paths)} at timestep {time_str}")
+            self.get_logger().info(
+                f"Cycle Complete: Saved {len(paths)} images at {time_str}"
+            )
 
-        except Exception as e:
-            self.get_logger().error(f"Post-processing failed: {e}")
+        except Exception as ex:
+            self.get_logger().info(f"[THREAD] Failed to save: {ex}")
 
     def destroy_node(self):
         self.save_executor.shutdown(wait=True)
