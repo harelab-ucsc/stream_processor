@@ -17,13 +17,15 @@ import utm
 import glob2
 import piexif
 import concurrent.futures
+import sqlite3
 # import copy
 
 import numpy as np
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, qos_profile_sensor_data
+from rclpy.qos import QoSProfile, ReliabilityPolicy, \
+    HistoryPolicy, qos_profile_sensor_data
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 from collections import deque
@@ -54,7 +56,7 @@ try:
 except ImportError:
     AS7265xCal = None
 
-# RELIABLE QoS for navigation/sensor data — these topics use RELIABLE publishers
+# RELIABLE QoS for navigation/sensor data — these topics use RELIABLE
 # and must not be dropped (INS, radalt, spectrometer, PPS).
 qos_profile = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
@@ -123,7 +125,8 @@ class SyncNode(Node):
             os.path.expanduser("~"), self.get_parameter("dir_name").value
         )
         os.makedirs(db_path, exist_ok=True)
-        self.dbc = dbConnector(os.path.join(db_path, self.get_parameter("db_name").value))
+        self.dbc = dbConnector(
+            os.path.join(db_path, self.get_parameter("db_name").value))
         self.dbc.boot(self.get_parameter("db_name").value, self.sensor_id)
         os.chmod(
             os.path.join(self.dir_name, self.db_name + ".db"),
@@ -132,9 +135,11 @@ class SyncNode(Node):
         time.sleep(1)
 
         # sensor calibration parameters
-        self.declare_parameter("sensors_yaml", "sensor_params/birdsEyeSensorParams.yaml")
+        default = "sensor_params/birdsEyeSensorParams.yaml"
+        self.declare_parameter("sensors_yaml", default)
         self.sensors_yaml = self.get_parameter("sensors_yaml").value
-        self.sensors_yaml = os.path.join(os.path.expanduser("~"), self.sensors_yaml)
+        self.sensors_yaml = os.path.join(
+            os.path.expanduser("~"), self.sensors_yaml)
         self.calibUptake()
 
         self.declare_parameter("clicks_csv", "catch/data.csv")
@@ -199,7 +204,8 @@ class SyncNode(Node):
                 self.ins_cb, qos_profile=qos_profile
             )
         else:
-            self.get_logger().warn("inertial_sense_ros2 not available — INS subscription disabled")
+            self.get_logger().warn(
+                "inertial_sense_ros2 not available — INS SUB disabled")
         if AltSNR is not None:
             self.caught_data["radalt"] = None
             self.create_subscription(
@@ -207,7 +213,8 @@ class SyncNode(Node):
                 self.radalt_cb, qos_profile=qos_profile
             )
         else:
-            self.get_logger().warn("custom_msgs not available — radalt subscription disabled")
+            self.get_logger().warn(
+                "custom_msgs not available — radar altimeter SUB disabled")
 
         # 4. AS7265x Spectrometer (For Reflectance)
         if AS7265xCal is not None:
@@ -218,7 +225,7 @@ class SyncNode(Node):
             )
         else:
             self.get_logger().warn(
-                "as7265x_at_msgs not available — spectrometer subscription disabled"
+                "as7265x_at_msgs not available — spectrometer SUB disabled"
             )
 
         self.get_logger().info("Sync Node Started. Waiting for PPS Trigger.")
@@ -338,7 +345,7 @@ class SyncNode(Node):
     # spectrometer reading for panel calibration instead of relying on
     # PPS-cycle state that may already have been cleared.
     def capture_panel_callback(self, request, response):
-        """Store the current spectral reading as the white reference (100% reflectance)."""
+        """Store the panel spectral reading as the white reference."""
         if self.current_raw_spec is None:
             response.success = False
             response.message = "No data received from sensor yet."
@@ -438,8 +445,8 @@ class SyncNode(Node):
             # preserved for cam0. cv2.imwrite handles uint8/uint16/float32.
             cv2.imwrite(filename, img)
         elif self.img_format == ".png":
-            # PNG cannot store float32. Scale to uint16 so the file is viewable;
-            # use TIFF if you need to preserve the float32 reflectance range.
+            # PNG cannot store float32; Scale to uint16.
+            # Use TIFF if you need to preserve the float32 reflectance range.
             if img.dtype == np.float32:
                 img = np.clip(img * 65535.0, 0, 65535).astype(np.uint16)
             cv2.imwrite(filename, img)
@@ -449,14 +456,17 @@ class SyncNode(Node):
                 lla = pose.lla
                 gps_ifd = {
                     piexif.GPSIFD.GPSLatitudeRef: "N" if lla[0] >= 0 else "S",
-                    piexif.GPSIFD.GPSLatitude: deg_to_dms_rational(abs(lla[0])),
+                    piexif.GPSIFD.GPSLatitude: deg_to_dms_rational(
+                        abs(lla[0])),
                     piexif.GPSIFD.GPSLongitudeRef: "E" if lla[1] >= 0 else "W",
-                    piexif.GPSIFD.GPSLongitude: deg_to_dms_rational(abs(lla[1])),
+                    piexif.GPSIFD.GPSLongitude: deg_to_dms_rational(
+                        abs(lla[1])),
                     piexif.GPSIFD.GPSAltitudeRef: 0,
                     piexif.GPSIFD.GPSAltitude: (int(lla[2] * 100), 100),
                 }
                 exif_bytes = piexif.dump({"GPS": gps_ifd})
-                pil_img.save(filename, exif=exif_bytes, format="JPEG", quality=95)
+                pil_img.save(
+                    filename, exif=exif_bytes, format="JPEG", quality=95)
             else:
                 pil_img.save(filename, format="JPEG", quality=95)
 
@@ -574,51 +584,20 @@ class SyncNode(Node):
                 data["cam1"], desired_encoding="passthrough"
             ).copy()
 
-            # --- Split ---
-            cam0_list = self.split_camarray(cam0_raw)
-            cam1_list = self.split_camarray(cam1_raw)
-
-            # --- Correct cam0 (MONO imagery for multispec) only ---
-            corrected_cam0 = []
-            for i, sub_img in enumerate(cam0_list):
-                filter_name, spec_idx = self.CAM0_ALIGNMENT[i]
-
-                # --- RADIOMETRIC CORRECTION ---
-                # digital_counts / relevant_irradiance (from spectrometer)
-                if spec and len(spec) > spec_idx:
-                    irr = spec[spec_idx]
-                else:
-                    total_intensity = sum(spec)
-                    ti_msg = Float32()
-                    ti_msg.data = float(total_intensity)
-                    self.total_irradiance_pub.publish(ti_msg)
-
-                    red = spec[13]   # 680 nm
-                    nir = spec[16]   # 810 nm
-                    ndvi = None
-                    if (nir + red) != 0:
-                        ndvi = (nir - red) / (nir + red)
-                        ndvi_msg = Float32()
-                        ndvi_msg.data = float(ndvi)
-                        self.ndvi_pub.publish(ndvi_msg)
-
-                    peak_idx = max(range(len(spec)), key=lambda idx: spec[idx])
-                    peak_wavelength = self.spectrometer_wavelengths[peak_idx]
-                    ndvi_str = f"{ndvi:.3f}" if ndvi is not None else "n/a"
-                    self.get_logger().info(
-                        f"Peak Wavelength: {peak_wavelength}nm, NDVI: {ndvi_str}, "
-                        f"Total Intensity: {total_intensity:.2f}"
-                    )
-
-            # 2. Single-pass split + per-band reflectance (cam0) / debayer (cam1)
+            # 2. Split + per-band reflectance (cam0) / debayer (cam1)
             # via the C++ extension. Per-slice cam0 divisor uses CAM0_ALIGNMENT
             # (slice 0->spec[0], 1->spec[2], 2->spec[9], 3->spec[14]).
-            cam0_raw = self.br.imgmsg_to_cv2(data["cam0"], desired_encoding="passthrough")
-            cam1_raw = self.br.imgmsg_to_cv2(data["cam1"], desired_encoding="passthrough")
-            spec_np = np.asarray(spec, dtype=np.float32) if spec is not None else None
+            cam0_raw = self.br.imgmsg_to_cv2(
+                data["cam0"], desired_encoding="passthrough")
+            cam1_raw = self.br.imgmsg_to_cv2(
+                data["cam1"], desired_encoding="passthrough")
+            if spec is not None:
+                spec_np = np.asarray(spec, dtype=np.float32)
+            else:
+                spec_np = None
 
-            corrected_cam0 = process_cam0(cam0_raw, spec_np)   # 4 × float32 (H, W/4)
-            cam1_rgb_list = process_cam1(cam1_raw)             # 4 × RGB    (H, W/4, 3)
+            corrected_cam0 = process_cam0(cam0_raw, spec_np)  # 4 × (H,W/4)
+            cam1_rgb_list = process_cam1(cam1_raw)  # 4 × RGB    (H, W/4, 3)
             # Convert pose lat-lon -> UTM
             # returns easting, northing, zone number, zone letter
             u = utm.from_latlon(pose.lla[0], pose.lla[1])

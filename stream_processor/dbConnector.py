@@ -89,13 +89,13 @@ class dbConnector:
     def tableToDF(self, where):
         return pd.read_sql_query(f"SELECT * FROM {where}", self.db_c)
 
-    def setupTable(self, table_name, cols):
+    def setupTable(self, table, cols):
         cur = self.db_c.cursor()
         res = cur.execute(
-            f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}';"
+            f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}';"
         )
         if len(res.fetchall()) == 0:
-            cur.execute(f"CREATE TABLE {table_name}({cols})")
+            cur.execute(f"CREATE TABLE {table}({cols})")
             self.db_c.commit()
 
     def insertInto(self, table_name, cols, vals):
@@ -105,12 +105,12 @@ class dbConnector:
 
     def insertIgnoreInto(self, table_name, cols, vals):
         cur = self.db_c.cursor()
-        cur.execute(f"INSERT OR IGNORE INTO {table_name}({cols}) VALUES({vals})")
+        cur.execute(
+            f"INSERT OR IGNORE INTO {table_name}({cols}) VALUES({vals})")
         self.db_c.commit()
 
     def insertClicks(self, table_name, vals):
         cur = self.db_c.cursor()
-        # cur.executemany(f"INSERT INTO {table_name} (x, y, health) VALUES(?,?,?)", vals)
         cur.executemany(
             f"INSERT INTO {table_name} "
             "(x, y, zone_num, zone_letter, z, z_msl, tag) VALUES(?,?,?,?,?,?,?)",
