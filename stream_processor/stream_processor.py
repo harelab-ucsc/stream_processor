@@ -12,7 +12,7 @@ import utm
 import glob2
 import piexif
 import concurrent.futures
-import copy
+# import copy
 
 import numpy as np
 
@@ -21,7 +21,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
-from std_msgs.msg import Float32, Float32MultiArray
+from collections import deque
 from std_srvs.srv import Trigger
 from builtin_interfaces.msg import Time as BuiltinTime
 from inertial_sense_ros2.msg import DIDINS2
@@ -127,6 +127,10 @@ class SyncNode(Node):
             os.path.expanduser("~"), self.clicks_csv)
         self.csv_read()
 
+        # --- Camera framerate
+        self.declare_parameter("framerate", 3.0)
+        self.dir_name = self.get_parameter("framerate").value
+
         # --- INS Bitmasks ---
         self.HDW_STROBE = 0x00000020
         self.INS_STATUS_SOLUTION_MASK = 0x000F0000
@@ -138,14 +142,20 @@ class SyncNode(Node):
 
         # --- State Machine Variables ---
         self.state_lock = threading.Lock()
-        self.current_pps_stamp = None
-        self.caught_data = {
-            "cam0": None,
-            "cam1": None,
-            "pose": None,
-            "spec": None,
-            "radalt": None,
+        self.active_jobs = deque(maxlen=10)
+        self.max_latency = 0.2  # seconds (tune this)
+
+        # Per-sensor assignment windows (AFTER PPS)
+        self.assignment_window = {
+            "cam0": 0.95/self.framerate,
+            "cam1": 0.95/self.framerate,
+            "pose": 0.95/self.framerate,
+            "spec": 0.2,
+            "radalt": 0.1,
         }
+
+        # Allow slight negative offset (INS may beat PPS)
+        self.pretrigger_tolerance = 0.01
 
         # --- Subscriptions ---
         # 1. PPS Trigger (The heartbeat of the state machine)
@@ -181,21 +191,6 @@ class SyncNode(Node):
         )
 
         self.get_logger().info("Sync Node Started. Waiting for PPS Trigger.")
-
-        # --- Publishers ---
-        # From micasense_spectrometer_bridge.py:
-        self.irradiance_pub = self.create_publisher(
-            Float32MultiArray, "spectrometer/irradiance", 10
-        )
-        self.reflectance_pub = self.create_publisher(
-            Float32MultiArray, "spectrometer/reflectance", 10
-        )
-
-        # From spectrometer_processor.py:
-        self.ndvi_pub = self.create_publisher(Float32, "spectrometer/ndvi", 10)
-        self.total_irradiance_pub = self.create_publisher(
-            Float32, "spectrometer/total_intensity", 10
-        )
 
         # --- Services ---
         self.capture_panel_srv = self.create_service(
@@ -353,34 +348,40 @@ class SyncNode(Node):
                     params.append(tmp)
         return params
 
-    # --- 1. PPS Trigger (State Machine Start) ---
+    def get_msg_time(self, msg):
+        try:
+            return msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        except AttributeError:
+            return time.time()
+
     def pps_cb(self, msg: BuiltinTime):
+        pps_time = msg.sec + msg.nanosec * 1e-9
+
+        job = {
+            "pps_time": pps_time,
+            "stamp_msg": msg,
+            "created_at": time.time(),
+            "data": {
+                "cam0": None,
+                "cam1": None,
+                "pose": None,
+                "spec": None,
+                "radalt": None,
+            },
+            "dt": {}  # diagnostics
+        }
+
         with self.state_lock:
-            # Check for "Big Error" logic from diagram:
-            # If we get a NEW PPS but haven't "Caught All" from the last one
-            if any(v is not None for v in self.caught_data.values()):
-                if not self.all_caught():
-                    self.get_logger().error(
-                        "ERROR: New PPS received before previous cycle end!"
-                    )
-                    for item in self.caught_data:
-                        self.get_logger().info(
-                            f"{item}:{self.caught_data[item]}")
+            self.active_jobs.append(job)
 
-            # Clear State
-            self.current_pps_stamp = msg
-            for key in self.caught_data:
-                self.caught_data[key] = None
-            self.get_logger().info(
-                f"State Cleared. New Sync Cycle: {msg.sec}.{msg.nanosec}"
-            )
+        # Try to resolve older jobs
+        self.process_jobs()
 
-    # --- 2. Data "Catch" Callbacks ---
     def cam0_cb(self, msg):
-        self.catch("cam0", msg)
+        self.assign_to_job("cam0", msg)
 
     def cam1_cb(self, msg):
-        self.catch("cam1", msg)
+        self.assign_to_job("cam1", msg)
 
     def ins_cb(self, msg):
         # Check if Strobed
@@ -394,27 +395,12 @@ class SyncNode(Node):
 
     def radalt_cb(self, msg):
         if msg.snr > 13:
-            self.catch("radalt", msg.altitude)
+            self.assign_to_job("radalt", msg)
 
     # saves lists in case of a change in msg.values
     def spec_cb(self, msg):
         self.current_raw_spec = list(msg.values)
-        self.catch("spec", list(msg.values))
-
-    def catch(self, key, data):
-        with self.state_lock:
-            if self.current_pps_stamp is None:
-                return  # Ignore data until first PPS arrives
-
-            if self.caught_data[key] is None:
-                self.caught_data[key] = data
-
-            if self.all_caught():
-                # Logic: Stamp -> Split/Process -> Save
-                self.process_sync_cycle()
-
-    def all_caught(self):
-        return all(v is not None for v in self.caught_data.values())
+        self.assign_to_job("spec", msg)
 
     # --- 3. Processing and Saving ---
     def split_camarray(self, img, num_cams=4):
@@ -445,18 +431,77 @@ class SyncNode(Node):
             # Save directly with EXIF
             pil_img.save(filename, exif=exif_bytes, format="JPEG", quality=95)
 
-    def process_sync_cycle(self):
-        # Capture a snapshot of data to free the lock quickly
-        data = copy.deepcopy(self.caught_data)
-        stamp = self.current_pps_stamp
+    def is_complete(self, job):
+        return all(v is not None for v in job["data"].values())
 
-        # Reset state for next cycle immediately
-        for key in self.caught_data:
-            self.caught_data[key] = None
-        self.current_pps_stamp = None
+    def log_sync_diagnostics(self, job):
+        dt_info = job["dt"]
+        msg = ", ".join(
+            f"{k}:{v*1000:.1f}ms" for k, v in dt_info.items() if v is not None
+        )
+        self.get_logger().debug(f"[SYNC] {msg}")
 
-        # Push to save executor for saving
-        self.save_executor.submit(self.post_process_and_save, data, stamp)
+    def assign_to_job(self, key, msg):
+        ts = self.get_msg_time(msg)
+
+        with self.state_lock:
+            best_job = None
+            best_dt = float("inf")
+
+            for job in self.active_jobs:
+                dt = ts - job["pps_time"]
+
+                # Allow small pre-trigger (INS edge case)
+                if dt < -self.pretrigger_tolerance:
+                    continue
+
+                if dt > self.assignment_window[key]:
+                    continue
+
+                abs_dt = abs(dt)
+
+                if abs_dt < best_dt:
+                    best_dt = abs_dt
+                    best_job = job
+
+            if best_job is None:
+                return
+
+            existing = best_job["data"][key]
+
+            if existing is None:
+                best_job["data"][key] = msg
+                best_job["dt"][key] = best_dt
+            else:
+                # Replace if closer
+                if best_dt < best_job["dt"][key]:
+                    best_job["data"][key] = msg
+                    best_job["dt"][key] = best_dt
+
+    def process_jobs(self):
+        now = time.time()
+
+        with self.state_lock:
+            while self.active_jobs:
+                job = self.active_jobs[0]
+
+                if now - job["created_at"] < self.max_latency:
+                    break  # wait for more data
+
+                self.active_jobs.popleft()
+
+                if self.is_complete(job):
+                    self.log_sync_diagnostics(job)
+
+                    self.save_executor.submit(
+                        self.post_process_and_save,
+                        job["data"],
+                        job["stamp_msg"]
+                    )
+                else:
+                    self.get_logger().warn(
+                        f"PPS frame drop @ {job['pps_time']:.3f} (incomplete)"
+                    )
 
     def compute_reflectance(self, spec_vals):
         if self.panel_calib is None:
@@ -484,46 +529,9 @@ class SyncNode(Node):
         """
         try:
             pose = data["pose"]
+            spec = data["spec"]
             time_str = f"{stamp.sec}.{str(stamp.nanosec).rjust(9,'0')}"
             self.get_logger().info(f"Saving data frame at timestep {time_str}")
-
-            # 1. Reflectance Post-Processing
-            # Indices: Red=13 (680nm), NIR=16 (810nm)
-            spec = data["spec"]
-
-            reflectance = None
-            if spec is not None:
-                # self.publish_irradiance(spec)
-                reflectance = self.compute_reflectance(spec)
-
-                if reflectance is not None:
-                    ref_msg = Float32MultiArray()
-                    ref_msg.data = reflectance
-                    self.reflectance_pub.publish(ref_msg)
-
-            if len(spec) < 18:
-                self.get_logger().warn(f"Got incomplete spectrometer data:\
-                    {len(spec)} channels")
-            else:
-                total_intensity = sum(data)
-                ti_msg = Float32()
-                ti_msg.data = float(total_intensity)
-                self.total_irradiance_pub.publish(ti_msg)
-
-                red = spec[13]  # 680nm
-                nir = spec[16]  # 810nm
-                if (nir + red) != 0:
-                    ndvi = (nir - red) / (nir + red)
-                    ndvi_msg = Float32()
-                    ndvi_msg.data = float(ndvi)
-                    self.ndvi_pub.publish(ndvi_msg)
-
-                peak_idx = max(range(len(spec)), key=lambda idx: spec[idx])
-                peak_wavelength = self.spectrometer_wavelengths[peak_idx]
-                self.get_logger().info(
-                    f"Peak Wavelength: {peak_wavelength}nm, NDVI: {ndvi:.3f}, \
-                    Total Intensity: {total_intensity:.2f}"
-                )
 
             # --- Convert ---
             cam0_raw = self.br.imgmsg_to_cv2(
@@ -557,11 +565,9 @@ class SyncNode(Node):
                     final_img = sub_img
                 corrected_cam0.append(final_img)
 
-            # 2. Convert pose lat-lon -> UTM
+            # Convert pose lat-lon -> UTM
             # returns easting, northing, zone number, zone letter
             u = utm.from_latlon(pose.lla[0], pose.lla[1])
-            # utm_NUM = u[2]
-            # utm_LET = u[3]
 
             # 3. Save Images to File
             paths = []
@@ -588,14 +594,14 @@ class SyncNode(Node):
                 u[0],
                 u[1],
                 pose.lla[2],
-                # quat is scalar-first in NED -> convert to scalar-last ENU
-                pose.qn2b[2],
+                # quat is scalar-first NED -> convert to scalar-last NED
                 pose.qn2b[1],
-                -pose.qn2b[3],
+                pose.qn2b[2],
+                pose.qn2b[3],
                 pose.qn2b[0],
                 self.RTK_STATUS,
                 self.INS_STATUS,
-                float(data["radalt"]),
+                float(data["radalt"].altitude),
                 '"' + paths_str + '"',
                 time_str,
             ]
