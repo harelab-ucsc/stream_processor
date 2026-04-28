@@ -198,7 +198,6 @@ class SyncNode(Node):
 
         # 3. Navigation & Environment
         if DIDINS2 is not None:
-            self.caught_data["pose"] = None
             self.create_subscription(
                 DIDINS2, "/ins_quat_uvw_lla",
                 self.ins_cb, qos_profile=qos_profile
@@ -207,7 +206,6 @@ class SyncNode(Node):
             self.get_logger().warn(
                 "inertial_sense_ros2 not available — INS SUB disabled")
         if AltSNR is not None:
-            self.caught_data["radalt"] = None
             self.create_subscription(
                 AltSNR, "/rad_altitude",
                 self.radalt_cb, qos_profile=qos_profile
@@ -218,7 +216,6 @@ class SyncNode(Node):
 
         # 4. AS7265x Spectrometer (For Reflectance)
         if AS7265xCal is not None:
-            self.caught_data["spec"] = None
             self.create_subscription(
                 AS7265xCal, "/as7265x/calibrated_values",
                 self.spec_cb, qos_profile=qos_profile
