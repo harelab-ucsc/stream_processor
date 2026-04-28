@@ -135,12 +135,12 @@ class SyncNode(Node):
         time.sleep(1)
 
         # sensor calibration parameters
-        default = "sensor_params/birdsEyeSensorParams.yaml"
-        self.declare_parameter("sensors_yaml", default)
-        self.sensors_yaml = self.get_parameter("sensors_yaml").value
-        self.sensors_yaml = os.path.join(
-            os.path.expanduser("~"), self.sensors_yaml)
-        self.calibUptake()
+        # default = "sensor_params/birdsEyeSensorParams.yaml"
+        # self.declare_parameter("sensors_yaml", default)
+        # self.sensors_yaml = self.get_parameter("sensors_yaml").value
+        # self.sensors_yaml = os.path.join(
+        #     os.path.expanduser("~"), self.sensors_yaml)
+        # self.calibUptake()
 
         self.declare_parameter("clicks_csv", "catch/data.csv")
         # self.declare_parameter("clicks_csv", "catch/data__2025_01_10.csv")
@@ -151,7 +151,7 @@ class SyncNode(Node):
 
         # --- Camera framerate
         self.declare_parameter("framerate", 3.0)
-        self.dir_name = self.get_parameter("framerate").value
+        self.framerate = self.get_parameter("framerate").value
 
         # --- INS Bitmasks ---
         self.HDW_STROBE = 0x00000020
