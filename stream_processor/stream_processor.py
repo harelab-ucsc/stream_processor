@@ -574,7 +574,8 @@ class SyncNode(Node):
         """
         try:
             pose = data["pose"]
-            spec = data["spec"]
+            spec = data["spec"].values
+            radalt = data["radalt"].altitude
             time_str = f"{stamp.sec}.{str(stamp.nanosec).rjust(9,'0')}"
             self.get_logger().info(f"Saving data frame at timestep {time_str}")
 
@@ -635,7 +636,7 @@ class SyncNode(Node):
                 pose.qn2b[0],
                 self.RTK_STATUS,
                 self.INS_STATUS,
-                float(data["radalt"].altitude),
+                float(radalt),
                 '"' + paths_str + '"',
                 time_str,
             ]
