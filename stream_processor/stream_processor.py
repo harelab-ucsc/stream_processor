@@ -538,6 +538,11 @@ class SyncNode(Node):
                     self.get_logger().warn(
                         f"PPS frame drop @ {job['pps_time']:.3f} (incomplete)"
                     )
+                    for key in job["data"].keys():
+                        if job['data'][key] is None:
+                            self.get_logger().warn(
+                                f"    job['data'][{key}] is None"
+                            )
 
     def compute_reflectance(self, spec_vals):
         if self.panel_calib is None:
