@@ -424,7 +424,7 @@ class SyncNode(Node):
             tmp = (msg.ins_status) & self.INS_STATUS_SOLUTION_MASK
             self.INS_STATUS = tmp >> self.INS_STATUS_SOLUTION_OFFSET
 
-            self.catch("pose", msg)
+            self.assign_to_job("pose", msg)
 
     def radalt_cb(self, msg):
         if msg.snr > 13:
