@@ -24,8 +24,12 @@ import numpy as np
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, \
-    HistoryPolicy, qos_profile_sensor_data
+from rclpy.qos import (
+    QoSProfile,
+    ReliabilityPolicy,
+    HistoryPolicy,
+    qos_profile_sensor_data,
+)
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 from collections import deque
@@ -126,7 +130,8 @@ class SyncNode(Node):
         )
         os.makedirs(db_path, exist_ok=True)
         self.dbc = dbConnector(
-            os.path.join(db_path, self.get_parameter("db_name").value))
+            os.path.join(db_path, self.get_parameter("db_name").value)
+        )
         self.dbc.boot(self.get_parameter("db_name").value, self.sensor_id)
         os.chmod(
             os.path.join(self.dir_name, self.db_name + ".db"),
@@ -145,8 +150,7 @@ class SyncNode(Node):
         self.declare_parameter("clicks_csv", "catch/data.csv")
         # self.declare_parameter("clicks_csv", "catch/data__2025_01_10.csv")
         self.clicks_csv = self.get_parameter("clicks_csv").value
-        self.clicks_csv = os.path.join(
-            os.path.expanduser("~"), self.clicks_csv)
+        self.clicks_csv = os.path.join(os.path.expanduser("~"), self.clicks_csv)
         self.csv_read()
 
         # --- Camera framerate
@@ -169,9 +173,9 @@ class SyncNode(Node):
 
         # Per-sensor assignment windows (AFTER PPS)
         self.assignment_window = {
-            "cam0": 0.95/self.framerate,
-            "cam1": 0.95/self.framerate,
-            "pose": 0.95/self.framerate,
+            "cam0": 0.95 / self.framerate,
+            "cam1": 0.95 / self.framerate,
+            "pose": 0.95 / self.framerate,
             "spec": 0.2,
             "radalt": 0.1,
         }
@@ -182,43 +186,42 @@ class SyncNode(Node):
         # --- Subscriptions ---
         # 1. PPS Trigger (The heartbeat of the state machine)
         self.create_subscription(
-            BuiltinTime, "/pps/time",
-            self.pps_cb, qos_profile=qos_profile
+            BuiltinTime, "/pps/time", self.pps_cb, qos_profile=qos_profile
         )
 
         # 2. Camera Streams (BEST_EFFORT to match camera driver publishers)
         self.create_subscription(
-            Image, "/cam0/camera_node/image_raw",
-            self.cam0_cb, qos_profile=img_qos
+            Image, "/cam0/camera_node/image_raw", self.cam0_cb, qos_profile=img_qos
         )
         self.create_subscription(
-            Image, "/cam1/camera_node/image_raw",
-            self.cam1_cb, qos_profile=img_qos
+            Image, "/cam1/camera_node/image_raw", self.cam1_cb, qos_profile=img_qos
         )
 
         # 3. Navigation & Environment
         if DIDINS2 is not None:
             self.create_subscription(
-                DIDINS2, "/ins_quat_uvw_lla",
-                self.ins_cb, qos_profile=qos_profile
+                DIDINS2, "/ins_quat_uvw_lla", self.ins_cb, qos_profile=qos_profile
             )
         else:
             self.get_logger().warn(
-                "inertial_sense_ros2 not available — INS SUB disabled")
+                "inertial_sense_ros2 not available — INS SUB disabled"
+            )
         if AltSNR is not None:
             self.create_subscription(
-                AltSNR, "/rad_altitude",
-                self.radalt_cb, qos_profile=qos_profile
+                AltSNR, "/rad_altitude", self.radalt_cb, qos_profile=qos_profile
             )
         else:
             self.get_logger().warn(
-                "custom_msgs not available — radar altimeter SUB disabled")
+                "custom_msgs not available — radar altimeter SUB disabled"
+            )
 
         # 4. AS7265x Spectrometer (For Reflectance)
         if AS7265xCal is not None:
             self.create_subscription(
-                AS7265xCal, "/as7265x/calibrated_values",
-                self.spec_cb, qos_profile=qos_profile
+                AS7265xCal,
+                "/as7265x/calibrated_values",
+                self.spec_cb,
+                qos_profile=qos_profile,
             )
         else:
             self.get_logger().warn(
@@ -233,8 +236,7 @@ class SyncNode(Node):
         )
 
         # --- Multithreading setup ---
-        self.save_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=4)
+        self.save_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
     def dirCheck(self):
         if not os.path.isdir(self.dir_name):
@@ -279,8 +281,7 @@ class SyncNode(Node):
                 u = utm.from_latlon(float(line[0]), float(line[1]))
                 tag = int(line[-1][-1])
                 data.append(
-                    [u[0], u[1], u[2], u[3],
-                     float(line[2]), float(line[3]), tag]
+                    [u[0], u[1], u[2], u[3], float(line[2]), float(line[3]), tag]
                 )
         self.dbc.insertClicks(f"clicks_{self.db_name}", data)
         self.get_logger().info("...Done reading clicks CSV file.\n")
@@ -303,8 +304,7 @@ class SyncNode(Node):
                     self.K = data["intrinsics"]
                     self.dist = data["distortion_coeffs"]
                     self.extr = data["T_cam_imu"]
-                    self.extr = utilities.matrix_list_converter(
-                        self.extr, (4, 4))
+                    self.extr = utilities.matrix_list_converter(self.extr, (4, 4))
                     res = self.res
                     intr1 = self.K
                     intr2 = self.dist
@@ -368,8 +368,7 @@ class SyncNode(Node):
         params = []
         cols = "sensorID, resolution, intrinsics1, intrinsics2, extrinsics"
         table = f"parameters_{self.db_name}"
-        ret = self.dbc.getFrom(cols, table,
-                               cond=f'WHERE sensorID = "{device_key}"')
+        ret = self.dbc.getFrom(cols, table, cond=f'WHERE sensorID = "{device_key}"')
         for elem in ret:
             for i, item in enumerate(elem):
                 if item == device_key:
@@ -401,7 +400,7 @@ class SyncNode(Node):
                 "spec": None,
                 "radalt": None,
             },
-            "dt": {}  # diagnostics
+            "dt": {},  # diagnostics
         }
 
         with self.state_lock:
@@ -453,17 +452,14 @@ class SyncNode(Node):
                 lla = pose.lla
                 gps_ifd = {
                     piexif.GPSIFD.GPSLatitudeRef: "N" if lla[0] >= 0 else "S",
-                    piexif.GPSIFD.GPSLatitude: deg_to_dms_rational(
-                        abs(lla[0])),
+                    piexif.GPSIFD.GPSLatitude: deg_to_dms_rational(abs(lla[0])),
                     piexif.GPSIFD.GPSLongitudeRef: "E" if lla[1] >= 0 else "W",
-                    piexif.GPSIFD.GPSLongitude: deg_to_dms_rational(
-                        abs(lla[1])),
+                    piexif.GPSIFD.GPSLongitude: deg_to_dms_rational(abs(lla[1])),
                     piexif.GPSIFD.GPSAltitudeRef: 0,
                     piexif.GPSIFD.GPSAltitude: (int(lla[2] * 100), 100),
                 }
                 exif_bytes = piexif.dump({"GPS": gps_ifd})
-                pil_img.save(
-                    filename, exif=exif_bytes, format="JPEG", quality=95)
+                pil_img.save(filename, exif=exif_bytes, format="JPEG", quality=95)
             else:
                 pil_img.save(filename, format="JPEG", quality=95)
 
@@ -473,7 +469,7 @@ class SyncNode(Node):
     def log_sync_diagnostics(self, job):
         dt_info = job["dt"]
         msg = ", ".join(
-            f"{k}:{v*1000:.1f}ms" for k, v in dt_info.items() if v is not None
+            f"{k}:{v * 1000:.1f}ms" for k, v in dt_info.items() if v is not None
         )
         self.get_logger().debug(f"[SYNC] {msg}")
 
@@ -530,19 +526,15 @@ class SyncNode(Node):
                     self.log_sync_diagnostics(job)
 
                     self.save_executor.submit(
-                        self.post_process_and_save,
-                        job["data"],
-                        job["stamp_msg"]
+                        self.post_process_and_save, job["data"], job["stamp_msg"]
                     )
                 else:
                     self.get_logger().warn(
                         f"PPS frame drop @ {job['pps_time']:.3f} (incomplete)"
                     )
                     for key in job["data"].keys():
-                        if job['data'][key] is None:
-                            self.get_logger().warn(
-                                f"    job['data'][{key}] is None"
-                            )
+                        if job["data"][key] is None:
+                            self.get_logger().warn(f"    job['data'][{key}] is None")
 
     def compute_reflectance(self, spec_vals):
         if self.panel_calib is None:
@@ -576,7 +568,7 @@ class SyncNode(Node):
             pose = data["pose"]
             spec = data["spec"].values
             radalt = data["radalt"].altitude
-            time_str = f"{stamp.sec}.{str(stamp.nanosec).rjust(9,'0')}"
+            time_str = f"{stamp.sec}.{str(stamp.nanosec).rjust(9, '0')}"
             self.get_logger().info(f"Saving data frame at timestep {time_str}")
 
             # --- Convert ---
@@ -591,11 +583,13 @@ class SyncNode(Node):
             # via the C++ extension. Per-slice cam0 divisor uses CAM0_ALIGNMENT
             # (slice 0->spec[0], 1->spec[2], 2->spec[9], 3->spec[14]).
             cam0_raw = self.br.imgmsg_to_cv2(
-                data["cam0"], desired_encoding="passthrough")
+                data["cam0"], desired_encoding="passthrough"
+            )
             cam1_raw = self.br.imgmsg_to_cv2(
-                data["cam1"], desired_encoding="passthrough")
+                data["cam1"], desired_encoding="passthrough"
+            )
             if spec is not None:
-                spec_np = np.asarray(spec, dtype=np.float32)
+                spec_np = np.asarray(spec.values, dtype=np.float32)
             else:
                 spec_np = None
 
