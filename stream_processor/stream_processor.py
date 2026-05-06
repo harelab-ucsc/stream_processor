@@ -589,7 +589,7 @@ class SyncNode(Node):
                 data["cam1"], desired_encoding="passthrough"
             )
             if spec is not None:
-                spec_np = np.asarray(spec.values, dtype=np.float32)
+                spec_np = np.asarray(spec, dtype=np.float32)
             else:
                 spec_np = None
 
