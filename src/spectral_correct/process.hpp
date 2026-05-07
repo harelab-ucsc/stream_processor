@@ -25,5 +25,9 @@ std::vector<py::array> process_cam1(
     py::array input,
     int num_slices);
 
+// Returns a (possibly empty) list of human-readable issue strings.
+// An empty list means the band is healthy.
+std::vector<std::string> check_slice_health(py::array slice);
+
 }  // namespace spectral_correct
 }  // namespace stream_processor

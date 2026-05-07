@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <stdexcept>
 #include <string>
 
@@ -196,6 +197,74 @@ std::vector<py::array> process_cam1(py::array input, int num_slices) {
     }
 
     return outputs;
+}
+
+std::vector<std::string> check_slice_health(py::array slice) {
+    std::vector<std::string> issues;
+
+    if (slice.size() == 0) {
+        issues.push_back("empty array (0 elements)");
+        return issues;
+    }
+
+    const auto dt = slice.dtype();
+    const char kind = dt.kind();
+    const auto itemsize = dt.itemsize();
+    const py::ssize_t n = slice.size();
+
+    bool all_zero = true;
+    double sum = 0.0;
+    double dtype_max = 1.0;
+
+    if (kind == 'u' && itemsize == 1) {
+        dtype_max = 255.0;
+        auto arr = py::array_t<uint8_t,
+            py::array::c_style | py::array::forcecast>(slice);
+        const uint8_t * data = arr.data();
+        for (py::ssize_t i = 0; i < n; ++i) {
+            if (data[i] != 0) all_zero = false;
+            sum += data[i];
+        }
+    } else if ((kind == 'u' || kind == 'i') && itemsize == 2) {
+        dtype_max = 65535.0;
+        auto arr = py::array_t<uint16_t,
+            py::array::c_style | py::array::forcecast>(slice);
+        const uint16_t * data = arr.data();
+        for (py::ssize_t i = 0; i < n; ++i) {
+            if (data[i] != 0) all_zero = false;
+            sum += data[i];
+        }
+    } else if (kind == 'f' && itemsize == 4) {
+        dtype_max = 1.0;
+        auto arr = py::array_t<float,
+            py::array::c_style | py::array::forcecast>(slice);
+        const float * data = arr.data();
+        for (py::ssize_t i = 0; i < n; ++i) {
+            if (data[i] != 0.0f) all_zero = false;
+            sum += static_cast<double>(data[i]);
+        }
+    } else {
+        // Unsupported dtype — skip silently
+        return issues;
+    }
+
+    if (all_zero) {
+        issues.push_back(
+            "all-zero pixels — possible USB/driver failure or dead camera");
+        return issues;
+    }
+
+    const double mean_norm = (sum / static_cast<double>(n)) / dtype_max;
+    if (mean_norm < 0.01) {
+        char buf[128];
+        std::snprintf(buf, sizeof(buf),
+            "near-black image (normalised mean=%.4f)"
+            " — possible dead camera or lens cap",
+            mean_norm);
+        issues.push_back(std::string(buf));
+    }
+
+    return issues;
 }
 
 }  // namespace spectral_correct

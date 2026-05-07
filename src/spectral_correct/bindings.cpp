@@ -6,6 +6,7 @@
 namespace py = pybind11;
 using stream_processor::spectral_correct::process_cam0;
 using stream_processor::spectral_correct::process_cam1;
+using stream_processor::spectral_correct::check_slice_health;
 
 PYBIND11_MODULE(_core, m) {
     m.doc() = "Single-pass split + spectral correction (cam0) / debayer (cam1).";
@@ -44,5 +45,24 @@ Args:
 
 Returns:
     List of (H, W/num_slices, 3) ndarrays, dtype matching the input.
+)doc");
+
+    m.def("check_slice_health", &check_slice_health,
+          py::arg("slice"),
+          R"doc(
+Check a single post-split image band for quality issues.
+
+Returns a (possibly empty) list of human-readable issue strings.
+An empty list means the band is healthy.
+
+Checks:
+  - All-zero pixels  — USB/driver failure or dead camera
+  - Near-black mean (<1% of dtype max) — lens cap or dead camera
+
+Args:
+    slice: numpy array, any rank. Supported dtypes: uint8, uint16, float32.
+
+Returns:
+    List[str] of issue descriptions; empty => healthy.
 )doc");
 }

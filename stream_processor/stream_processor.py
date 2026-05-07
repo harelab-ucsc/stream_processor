@@ -42,7 +42,7 @@ from PIL import Image as Img
 # Custom code imports
 from .dbConnector import dbConnector
 from . import utilities
-from .spectral_correct import process_cam0, process_cam1
+from .spectral_correct import process_cam0, process_cam1, check_slice_health
 
 # Tolerant imports — these message types live in repos that may not be
 # installed in test/CI containers (inertial_sense_ros2, custom_msgs).
@@ -596,7 +596,18 @@ class SyncNode(Node):
             )
 
             corrected_cam0 = process_cam0(cam0_raw, spec_np)  # 4 × (H,W/4)
+            for _i, _band in enumerate(corrected_cam0):
+                for _issue in check_slice_health(_band):
+                    self.get_logger().error(
+                        f"[IMG HEALTH] cam0[{_i}]: {_issue}"
+                    )
+
             cam1_rgb_list = process_cam1(cam1_raw)  # 4 × RGB    (H, W/4, 3)
+            for _i, _rgb in enumerate(cam1_rgb_list):
+                for _issue in check_slice_health(_rgb):
+                    self.get_logger().error(
+                        f"[IMG HEALTH] cam1[{_i}]: {_issue}"
+                    )
             # Convert pose lat-lon -> UTM
             # returns easting, northing, zone number, zone letter
             u = utm.from_latlon(pose.lla[0], pose.lla[1])
