@@ -10,6 +10,7 @@ import cv2
 import os
 import threading
 import time
+import traceback
 import stat
 import csv
 import yaml
@@ -648,7 +649,9 @@ class SyncNode(Node):
             )
 
         except Exception as ex:
-            self.get_logger().info(f"[THREAD] Failed to save: {ex}")
+            self.get_logger().error(
+                f"[THREAD] Failed to save: {ex}\n{traceback.format_exc()}"
+            )
 
     def destroy_node(self):
         self.save_executor.shutdown(wait=True)
