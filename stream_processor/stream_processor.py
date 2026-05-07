@@ -566,32 +566,25 @@ class SyncNode(Node):
         """
         try:
             pose = data["pose"]
-            spec = data["spec"].values
             radalt = data["radalt"].altitude
             time_str = f"{stamp.sec}.{str(stamp.nanosec).rjust(9, '0')}"
             self.get_logger().info(f"Saving data frame at timestep {time_str}")
 
-            # --- Convert ---
-            cam0_raw = self.br.imgmsg_to_cv2(
-                data["cam0"], desired_encoding="passthrough"
-            ).copy()
-            cam1_raw = self.br.imgmsg_to_cv2(
-                data["cam1"], desired_encoding="passthrough"
-            ).copy()
+            # Extract spectral values — msg.values in ROS2 Iron returns a numpy
+            # array for float32[] fields, so handle both message and raw array.
+            _spec = data["spec"]
+            spec_np = np.asarray(
+                _spec if isinstance(_spec, np.ndarray) else _spec.values,
+                dtype=np.float32,
+            )
 
-            # 2. Split + per-band reflectance (cam0) / debayer (cam1)
-            # via the C++ extension. Per-slice cam0 divisor uses CAM0_ALIGNMENT
-            # (slice 0->spec[0], 1->spec[2], 2->spec[9], 3->spec[14]).
+            # Convert images once
             cam0_raw = self.br.imgmsg_to_cv2(
                 data["cam0"], desired_encoding="passthrough"
             )
             cam1_raw = self.br.imgmsg_to_cv2(
                 data["cam1"], desired_encoding="passthrough"
             )
-            if spec is not None:
-                spec_np = np.asarray(spec, dtype=np.float32)
-            else:
-                spec_np = None
 
             corrected_cam0 = process_cam0(cam0_raw, spec_np)  # 4 × (H,W/4)
             cam1_rgb_list = process_cam1(cam1_raw)  # 4 × RGB    (H, W/4, 3)
