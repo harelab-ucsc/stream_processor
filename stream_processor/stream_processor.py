@@ -38,6 +38,9 @@ from std_srvs.srv import Trigger
 from builtin_interfaces.msg import Time as BuiltinTime
 
 from PIL import Image as Img
+import rasterio
+from rasterio.crs import CRS
+from rasterio.transform import from_origin
 
 # Custom code imports
 from .dbConnector import dbConnector
@@ -157,6 +160,11 @@ class SyncNode(Node):
         # --- Camera framerate
         self.declare_parameter("framerate", 3.0)
         self.framerate = self.get_parameter("framerate").value
+
+        # --- Ground sample distance (metres per pixel).
+        # Update this to match your optics once you have calibration data.
+        self.declare_parameter("gsd_m", 0.03)
+        self.gsd_m = self.get_parameter("gsd_m").value
 
         # --- INS Bitmasks ---
         self.HDW_STROBE = 0x00000020
@@ -445,15 +453,13 @@ class SyncNode(Node):
 
     # --- 3. Processing and Saving ---
     def image_save(self, img, filename, pose):
+        # Normalise float32 reflectance → uint16 for all formats.
+        if img.dtype == np.float32:
+            img = np.clip(img * 65535.0, 0, 65535).astype(np.uint16)
+
         if self.img_format in (".tiff", ".tif"):
-            # TIFF stores float32 natively — no scaling, full reflectance range
-            # preserved for cam0. cv2.imwrite handles uint8/uint16/float32.
-            cv2.imwrite(filename, img)
+            self._save_geotiff(img, filename, pose)
         elif self.img_format == ".png":
-            # PNG cannot store float32; Scale to uint16.
-            # Use TIFF if you need to preserve the float32 reflectance range.
-            if img.dtype == np.float32:
-                img = np.clip(img * 65535.0, 0, 65535).astype(np.uint16)
             cv2.imwrite(filename, img)
         elif self.img_format == ".jpg":
             pil_img = Img.fromarray(img)
@@ -471,6 +477,41 @@ class SyncNode(Node):
                 pil_img.save(filename, exif=exif_bytes, format="JPEG", quality=95)
             else:
                 pil_img.save(filename, format="JPEG", quality=95)
+
+    def _save_geotiff(self, img, filename, pose):
+        """Write a georeferenced uint16 GeoTIFF using the INS position."""
+        h, w = img.shape[:2]
+        bands = 1 if img.ndim == 2 else img.shape[2]
+
+        if pose is not None:
+            u = utm.from_latlon(pose.lla[0], pose.lla[1])
+            easting, northing, zone_num, zone_letter = u
+            is_northern = zone_letter >= 'N'
+            epsg = 32600 + zone_num if is_northern else 32700 + zone_num
+            crs = CRS.from_epsg(epsg)
+            # Place image centre at the INS position; derive upper-left corner.
+            west = easting - (w / 2.0) * self.gsd_m
+            north = northing + (h / 2.0) * self.gsd_m
+            transform = from_origin(west, north, self.gsd_m, self.gsd_m)
+        else:
+            crs = None
+            transform = rasterio.transform.IDENTITY
+
+        with rasterio.open(
+            filename, 'w',
+            driver='GTiff',
+            height=h, width=w,
+            count=bands,
+            dtype=img.dtype,
+            crs=crs,
+            transform=transform,
+            compress='deflate',
+        ) as dst:
+            if bands == 1:
+                dst.write(img, 1)
+            else:
+                for b in range(bands):
+                    dst.write(img[:, :, b], b + 1)
 
     def is_complete(self, job):
         return all(v is not None for v in job["data"].values())
@@ -681,7 +722,14 @@ def main(args=None):
     rclpy.init(args=args)
     node = SyncNode()
     try:
-        rclpy.spin(node)
+        while rclpy.ok():
+            try:
+                rclpy.spin_once(node, timeout_sec=1.0)
+            except RuntimeError as e:
+                # FastDDS SHM corruption (e.g. after a peer node SIGSEGV) can
+                # cause take_message to throw; log and continue rather than
+                # crashing the whole node.
+                node.get_logger().error(f"Executor RuntimeError (continuing): {e}")
     except KeyboardInterrupt:
         pass
     finally:
