@@ -30,12 +30,15 @@ float resolve_irr(const float * spec_data, py::ssize_t spec_len, int slice_idx) 
 
 template <typename T>
 void divide_slice(const py::array & in, py::array_t<float> & out,
-                  py::ssize_t slice_w, py::ssize_t slice_offset, float irr) {
+                  py::ssize_t slice_w, py::ssize_t slice_offset, float irr,
+                  float dtype_max) {
     const py::ssize_t h = in.shape(0);
     const py::ssize_t in_stride_row = in.strides(0) / sizeof(T);
     const T * in_data = static_cast<const T *>(in.data());
     float * out_data = out.mutable_data();
-    const float inv = 1.0f / irr;
+    // Normalize by dtype_max so output is in [0, 1/irr] ≈ [0, 1] reflectance.
+    // Without this, output = raw_dn / irr which is in the thousands for 16-bit input.
+    const float inv = 1.0f / (irr * dtype_max);
 
     for (py::ssize_t y = 0; y < h; ++y) {
         const T * src_row = in_data + y * in_stride_row + slice_offset;
@@ -110,14 +113,16 @@ std::vector<py::array_t<float>> process_cam0(
             py::str(static_cast<py::object>(dt)).cast<std::string>());
     }
 
+    const float dtype_max = is_8bit ? 255.0f : 65535.0f;
+
     {
         py::gil_scoped_release release;
         for (int i = 0; i < num_slices; ++i) {
             const py::ssize_t offset = i * slice_w;
             if (is_8bit) {
-                divide_slice<uint8_t>(input, outputs[i], slice_w, offset, irr[i]);
+                divide_slice<uint8_t>(input, outputs[i], slice_w, offset, irr[i], dtype_max);
             } else {
-                divide_slice<uint16_t>(input, outputs[i], slice_w, offset, irr[i]);
+                divide_slice<uint16_t>(input, outputs[i], slice_w, offset, irr[i], dtype_max);
             }
         }
     }
