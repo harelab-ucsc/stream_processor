@@ -186,8 +186,16 @@ class SyncNode(Node):
 
         # --- Subscriptions ---
         # 1. PPS Trigger (The heartbeat of the state machine)
+        # depth=1: only the latest pulse matters. Prevents sync_node from
+        # receiving a burst of backlogged PPS messages on startup (which would
+        # create many simultaneous jobs and flood the drop log).
+        pps_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
         self.create_subscription(
-            BuiltinTime, "/pps/time", self.pps_cb, qos_profile=qos_profile
+            BuiltinTime, "/pps/time", self.pps_cb, qos_profile=pps_qos
         )
 
         # 2. Camera Streams (BEST_EFFORT to match camera driver publishers)
