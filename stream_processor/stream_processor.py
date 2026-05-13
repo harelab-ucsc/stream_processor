@@ -17,7 +17,7 @@ import yaml
 import utm
 import glob2
 import piexif
-import concurrent.futures
+import queue
 import sqlite3
 # import copy
 
@@ -253,8 +253,14 @@ class SyncNode(Node):
             Trigger, "spectrometer/capture_panel", self.capture_panel_callback
         )
 
-        # --- Multithreading setup ---
-        self.save_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        # --- Producer/consumer save queue ---
+        self.save_queue = queue.Queue()
+        self._save_workers = []
+        for _ in range(8):
+            t = threading.Thread(target=self._save_worker, daemon=True)
+            t.start()
+            self._save_workers.append(t)
+        threading.Thread(target=self._queue_watchdog, daemon=True).start()
 
     def dirCheck(self):
         if not os.path.isdir(self.dir_name):
@@ -463,7 +469,9 @@ class SyncNode(Node):
             self._save_geotiff(img, filename, pose)
         elif self.img_format == ".png":
             cv2.imwrite(filename, img)
-        elif self.img_format in (".jpg", ".jpeg"):
+        elif self.img_format == ".jpg":
+            if img.dtype == np.uint16:
+                img = (img >> 8).astype(np.uint8)
             pil_img = Img.fromarray(img)
             if pose is not None:
                 lla = pose.lla
@@ -578,10 +586,7 @@ class SyncNode(Node):
 
                 if self.is_complete(job):
                     self.log_sync_diagnostics(job)
-
-                    self.save_executor.submit(
-                        self.post_process_and_save, job["data"], job["stamp_msg"]
-                    )
+                    self.save_queue.put((job["data"], job["stamp_msg"]))
                 else:
                     self.get_logger().warn(
                         f"PPS frame drop @ {job['pps_time']:.3f} (incomplete)"
@@ -713,8 +718,41 @@ class SyncNode(Node):
                 f"[THREAD] Failed to save: {ex}\n{traceback.format_exc()}"
             )
 
+    def _queue_watchdog(self):
+        while rclpy.ok():
+            depth = self.save_queue.qsize()
+            if depth > 0:
+                self.get_logger().info(f"Save queue depth: {depth}")
+            time.sleep(2.0)
+
+    def _save_worker(self):
+        while True:
+            item = self.save_queue.get()
+            if item is None:
+                self.save_queue.task_done()
+                break
+            data, stamp = item
+            try:
+                self.post_process_and_save(data, stamp)
+            finally:
+                self.save_queue.task_done()
+
     def destroy_node(self):
-        self.save_executor.shutdown(wait=True)
+        for _ in self._save_workers:
+            self.save_queue.put(None)
+
+        remaining = self.save_queue.qsize()
+        if remaining > 0:
+            self.get_logger().info(
+                f"Shutdown: waiting for {remaining} queued save(s) to finish..."
+            )
+            while not self.save_queue.empty():
+                self.get_logger().info(
+                    f"  save queue: {self.save_queue.qsize()} job(s) remaining"
+                )
+                time.sleep(2.0)
+
+        self.save_queue.join()
         super().destroy_node()
 
 
