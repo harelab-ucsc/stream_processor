@@ -20,6 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'stream_processor_node = stream_processor.stream_processor:main'
         ],
     },
 )
