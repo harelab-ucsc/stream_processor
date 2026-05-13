@@ -41,8 +41,9 @@ from as7265x_at_msgs.msg import AS7265xCal
 
 # Create a custom QoSProfile to prevent message drops
 qos_profile = QoSProfile(
-    reliability=ReliabilityPolicy.RELIABLE,  # Reliable delivery
-    history=HistoryPolicy.KEEP_LAST          # Keep all messages
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10
 )
 
 
@@ -332,13 +333,13 @@ class SyncNode(Node):
         data = copy.deepcopy(self.caught_data)
         stamp = self.current_pps_stamp
 
+        # Push to save executor for saving
+        self.save_executor.submit(self.post_process_and_save, data, stamp)
+        self.current_pps_stamp = None
+
         # Reset state for next cycle immediately
         for key in self.caught_data:
             self.caught_data[key] = None
-        self.current_pps_stamp = None
-
-        # Push to save executor for saving
-        self.save_executor.submit(self.post_process_and_save, data, stamp)
 
 
     def post_process_and_save(self, data, stamp):
