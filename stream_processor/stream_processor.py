@@ -66,10 +66,20 @@ except ImportError:
 
 # RELIABLE QoS for navigation/sensor data — these topics use RELIABLE
 # and must not be dropped (INS, radalt, spectrometer, PPS).
-qos_profile = QoSProfile(
+sns_qos = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
     history=HistoryPolicy.KEEP_LAST,
     depth=10,
+)
+
+# 1. PPS Trigger (The heartbeat of the state machine)
+# depth=1: only the latest pulse matters. Prevents sync_node from
+# receiving a burst of backlogged PPS messages on startup (which would
+# create many simultaneous jobs and flood the drop log).
+pps_qos = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
 )
 
 # BEST_EFFORT QoS for camera images — camera drivers publish with SensorDataQoS
@@ -193,15 +203,6 @@ class SyncNode(Node):
         self.pretrigger_tolerance = 0.01
 
         # --- Subscriptions ---
-        # 1. PPS Trigger (The heartbeat of the state machine)
-        # depth=1: only the latest pulse matters. Prevents sync_node from
-        # receiving a burst of backlogged PPS messages on startup (which would
-        # create many simultaneous jobs and flood the drop log).
-        pps_qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1,
-        )
         self.create_subscription(
             BuiltinTime, "/pps/time", self.pps_cb, qos_profile=pps_qos
         )
@@ -217,7 +218,7 @@ class SyncNode(Node):
         # 3. Navigation & Environment
         if DIDINS2 is not None:
             self.create_subscription(
-                DIDINS2, "/ins_quat_uvw_lla", self.ins_cb, qos_profile=qos_profile
+                DIDINS2, "/ins_quat_uvw_lla", self.ins_cb, qos_profile=sns_qos
             )
         else:
             self.get_logger().warn(
@@ -225,7 +226,7 @@ class SyncNode(Node):
             )
         if AltSNR is not None:
             self.create_subscription(
-                AltSNR, "/rad_altitude", self.radalt_cb, qos_profile=qos_profile
+                AltSNR, "/rad_altitude", self.radalt_cb, qos_profile=sns_qos
             )
         else:
             self.get_logger().warn(
@@ -238,7 +239,7 @@ class SyncNode(Node):
                 AS7265xCal,
                 "/as7265x/calibrated_values",
                 self.spec_cb,
-                qos_profile=qos_profile,
+                qos_profile=sns_qos,
             )
         else:
             self.get_logger().warn(
@@ -435,6 +436,7 @@ class SyncNode(Node):
     def ins_cb(self, msg):
         # Check if Strobed
         if msg.hdw_status & self.HDW_STROBE == self.HDW_STROBE:
+            self.get_logger().info('    ---> STROBED')
             tmp = (msg.ins_status) & self.INS_STATUS_GPS_NAV_FIX_MASK
             self.RTK_STATUS = tmp >> self.INS_STATUS_GPS_NAV_FIX_OFFSET
             tmp = (msg.ins_status) & self.INS_STATUS_SOLUTION_MASK
