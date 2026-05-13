@@ -436,7 +436,7 @@ class SyncNode(Node):
     def ins_cb(self, msg):
         # Check if Strobed
         if msg.hdw_status & self.HDW_STROBE == self.HDW_STROBE:
-            self.get_logger().info('    ---> STROBED')
+            self.get_logger().info("    ---> STROBED")
             tmp = (msg.ins_status) & self.INS_STATUS_GPS_NAV_FIX_MASK
             self.RTK_STATUS = tmp >> self.INS_STATUS_GPS_NAV_FIX_OFFSET
             tmp = (msg.ins_status) & self.INS_STATUS_SOLUTION_MASK
@@ -488,7 +488,7 @@ class SyncNode(Node):
         if pose is not None:
             u = utm.from_latlon(pose.lla[0], pose.lla[1])
             easting, northing, zone_num, zone_letter = u
-            is_northern = zone_letter >= 'N'
+            is_northern = zone_letter >= "N"
             epsg = 32600 + zone_num if is_northern else 32700 + zone_num
             crs = CRS.from_epsg(epsg)
             # Place image centre at the INS position; derive upper-left corner.
@@ -500,14 +500,16 @@ class SyncNode(Node):
             transform = rasterio.transform.IDENTITY
 
         with rasterio.open(
-            filename, 'w',
-            driver='GTiff',
-            height=h, width=w,
+            filename,
+            "w",
+            driver="GTiff",
+            height=h,
+            width=w,
             count=bands,
             dtype=img.dtype,
             crs=crs,
             transform=transform,
-            compress='deflate',
+            compress="none",
         ) as dst:
             if bands == 1:
                 dst.write(img, 1)
@@ -641,16 +643,12 @@ class SyncNode(Node):
             corrected_cam0 = process_cam0(cam0_raw, spec_np)  # 4 × (H,W/4)
             for _i, _band in enumerate(corrected_cam0):
                 for _issue in check_slice_health(_band):
-                    self.get_logger().error(
-                        f"[IMG HEALTH] cam0[{_i}]: {_issue}"
-                    )
+                    self.get_logger().error(f"[IMG HEALTH] cam0[{_i}]: {_issue}")
 
             cam1_rgb_list = process_cam1(cam1_raw)  # 4 × RGB    (H, W/4, 3)
             for _i, _rgb in enumerate(cam1_rgb_list):
                 for _issue in check_slice_health(_rgb):
-                    self.get_logger().error(
-                        f"[IMG HEALTH] cam1[{_i}]: {_issue}"
-                    )
+                    self.get_logger().error(f"[IMG HEALTH] cam1[{_i}]: {_issue}")
             # Convert pose lat-lon -> UTM
             # returns easting, northing, zone number, zone letter
             u = utm.from_latlon(pose.lla[0], pose.lla[1])
