@@ -436,7 +436,7 @@ class SyncNode(Node):
     def ins_cb(self, msg):
         # Check if Strobed
         if msg.hdw_status & self.HDW_STROBE == self.HDW_STROBE:
-            self.get_logger().info('    ---> STROBED')
+            # self.get_logger().info('    ---> STROBED')
             tmp = (msg.ins_status) & self.INS_STATUS_GPS_NAV_FIX_MASK
             self.RTK_STATUS = tmp >> self.INS_STATUS_GPS_NAV_FIX_OFFSET
             tmp = (msg.ins_status) & self.INS_STATUS_SOLUTION_MASK
