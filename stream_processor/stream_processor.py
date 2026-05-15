@@ -518,6 +518,7 @@ class SyncNode(Node):
             crs=crs,
             transform=transform,
             compress="none",
+            photometric="rgb" if bands == 3 else "minisblack",
         ) as dst:
             if bands == 1:
                 dst.write(img, 1)
