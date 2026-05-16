@@ -260,7 +260,15 @@ class SyncNode(Node):
             t = threading.Thread(target=self._save_worker, daemon=True)
             t.start()
             self._save_workers.append(t)
+
+        # Single serialised DB writer — eliminates concurrent sqlite3 write-lock
+        # races that produce "database is locked" errors.
+        self._db_queue = queue.Queue()
+        self._db_writer_thread = threading.Thread(target=self._db_writer, daemon=True)
+        self._db_writer_thread.start()
+
         threading.Thread(target=self._queue_watchdog, daemon=True).start()
+        threading.Thread(target=self._cpu_temp_watchdog, daemon=True).start()
 
     def dirCheck(self):
         if not os.path.isdir(self.dir_name):
@@ -697,18 +705,7 @@ class SyncNode(Node):
             head = "x, y, z, q, u, a, t, "
             head += "rtk_status, ins_status, radalt, save_loc, pps_time"
             val_str = ",".join(map(str, vals))
-            db_path = os.path.join(self.dir_name, self.db_name + ".db")
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-
-            insert_query = f"""
-            INSERT OR IGNORE INTO {self.sensor_id}_images_{self.db_name}
-            ({head})
-            VALUES ({val_str});
-            """
-            cursor.execute(insert_query)
-            conn.commit()
-            conn.close()
+            self._db_queue.put((head, val_str))
 
             self.get_logger().info(
                 f"Cycle Complete: Saved {len(paths)} images at {time_str}"
@@ -721,10 +718,54 @@ class SyncNode(Node):
 
     def _queue_watchdog(self):
         while rclpy.ok():
-            depth = self.save_queue.qsize()
-            if depth > 0:
-                self.get_logger().info(f"Save queue depth: {depth}")
+            sq = self.save_queue.qsize()
+            dq = self._db_queue.qsize()
+            if sq > 0 or dq > 0:
+                self.get_logger().info(f"Save queue depth: {sq}  DB queue depth: {dq}")
             time.sleep(2.0)
+
+    def _db_writer(self):
+        db_path = os.path.join(self.dir_name, self.db_name + ".db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        cursor = conn.cursor()
+        while True:
+            item = self._db_queue.get()
+            if item is None:
+                self._db_queue.task_done()
+                break
+            head, val_str = item
+            try:
+                cursor.execute(
+                    f"INSERT OR IGNORE INTO {self.sensor_id}_images_{self.db_name}"
+                    f" ({head}) VALUES ({val_str});"
+                )
+                conn.commit()
+            except Exception as e:
+                self.get_logger().error(f"[DB] Write failed: {e}")
+            finally:
+                self._db_queue.task_done()
+        conn.close()
+
+    def _cpu_temp_watchdog(self, warn_c=80.0, crit_c=90.0, interval=10.0):
+        while rclpy.ok():
+            time.sleep(interval)
+            try:
+                for zone_path in glob2.glob("/sys/class/thermal/thermal_zone*/temp"):
+                    with open(zone_path) as f:
+                        temp_c = int(f.read().strip()) / 1000.0
+                    zone = zone_path.split("/")[-2]
+                    if temp_c >= crit_c:
+                        self.get_logger().error(
+                            f"[THERMAL] {zone}: {temp_c:.1f}°C — CRITICAL"
+                        )
+                    elif temp_c >= warn_c:
+                        self.get_logger().warn(
+                            f"[THERMAL] {zone}: {temp_c:.1f}°C — high"
+                        )
+            except Exception as e:
+                self.get_logger().debug(f"[THERMAL] temp read failed: {e}")
 
     def _save_worker(self):
         while True:
@@ -739,9 +780,7 @@ class SyncNode(Node):
                 self.save_queue.task_done()
 
     def destroy_node(self):
-        for _ in self._save_workers:
-            self.save_queue.put(None)
-
+        # Snapshot depth before sentinels so we don't count them as pending work.
         remaining = self.save_queue.qsize()
         if remaining > 0:
             self.get_logger().info(
@@ -753,7 +792,15 @@ class SyncNode(Node):
                 )
                 time.sleep(2.0)
 
+        for _ in self._save_workers:
+            self.save_queue.put(None)
+
         self.save_queue.join()
+
+        # Drain the DB writer after all image workers have flushed their inserts.
+        self._db_queue.put(None)
+        self._db_queue.join()
+
         super().destroy_node()
 
 
