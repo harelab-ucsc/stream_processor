@@ -654,7 +654,19 @@ class SyncNode(Node):
                 data["cam1"], desired_encoding="passthrough"
             )
 
-            corrected_cam0 = process_cam0(cam0_raw, spec_np)  # 4 × (H,W/4)
+            if self.panel_calib is None:
+                self.get_logger().error(
+                    "No panel calibration captured — spectral correction skipped "
+                    "(images will not be reflectance-corrected). "
+                    "Call the spectrometer/capture_panel service before flight."
+                )
+                spec_for_correction = None
+            else:
+                spec_for_correction = np.asarray(
+                    self.compute_reflectance(spec_np), dtype=np.float32
+                )
+
+            corrected_cam0 = process_cam0(cam0_raw, spec_for_correction)  # 4 × (H,W/4)
             for _i, _band in enumerate(corrected_cam0):
                 for _issue in check_slice_health(_band):
                     self.get_logger().error(f"[IMG HEALTH] cam0[{_i}]: {_issue}")

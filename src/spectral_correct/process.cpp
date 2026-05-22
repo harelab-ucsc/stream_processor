@@ -19,10 +19,18 @@ namespace {
 float resolve_irr(const float * spec_data, py::ssize_t spec_len, int slice_idx) {
     const int spec_idx = CAM0_ALIGNMENT[slice_idx];
     if (!spec_data || spec_idx >= spec_len) {
+        std::fprintf(stderr,
+            "[spectral_correct] ERROR: no irradiance data for slice %d "
+            "(spec_idx=%d, spec_len=%zd) — falling back to irr=1.0\n",
+            slice_idx, spec_idx, static_cast<ssize_t>(spec_len));
         return 1.0f;
     }
     const float v = spec_data[spec_idx];
     if (!std::isfinite(v) || v <= 0.0f) {
+        std::fprintf(stderr,
+            "[spectral_correct] ERROR: irradiance for slice %d "
+            "(spec_idx=%d) is invalid (%.6g) — falling back to irr=1.0\n",
+            slice_idx, spec_idx, static_cast<double>(v));
         return 1.0f;
     }
     return v;
