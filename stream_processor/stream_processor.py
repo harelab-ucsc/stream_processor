@@ -510,6 +510,10 @@ class SyncNode(Node):
         self.get_logger().info(
             f"Irradiance reference received: {len(self.panel_spec_ref)} bands"
         )
+        if self._calibration_ready():
+            self.get_logger().info(
+                "Calibration complete — image capture and saving now active."
+            )
 
     # --- 3. Processing and Saving ---
     def image_save(self, img, filename, pose):
@@ -581,6 +585,9 @@ class SyncNode(Node):
     def is_complete(self, job):
         return all(v is not None for v in job["data"].values())
 
+    def _calibration_ready(self) -> bool:
+        return self.panel_calib is not None and self.panel_spec_ref is not None
+
     def log_sync_diagnostics(self, job):
         dt_info = job["dt"]
         msg = ", ".join(
@@ -638,8 +645,16 @@ class SyncNode(Node):
                 self.active_jobs.popleft()
 
                 if self.is_complete(job):
-                    self.log_sync_diagnostics(job)
-                    self.save_queue.put((job["data"], job["stamp_msg"]))
+                    if not self._calibration_ready():
+                        self.get_logger().warn(
+                            "Calibration not yet complete — discarding image cycle. "
+                            "Waiting for /panel_cal/irradiance (panel scan) "
+                            "and /panel_cal/spec_ref (auto_cal at 6 m AGL).",
+                            throttle_duration_sec=10.0,
+                        )
+                    else:
+                        self.log_sync_diagnostics(job)
+                        self.save_queue.put((job["data"], job["stamp_msg"]))
                 else:
                     self.get_logger().warn(
                         f"PPS frame drop @ {job['pps_time']:.3f} (incomplete)"
@@ -671,16 +686,11 @@ class SyncNode(Node):
                 data["cam1"], desired_encoding="passthrough"
             )
 
-            if self.panel_calib is None:
-                self.get_logger().error(
-                    "No panel calibration received — spectral correction skipped. "
-                    "Run MicaCRPCal before flight and hold the CRP under cam0.",
-                    throttle_duration_sec=10.0,
+            if not self._calibration_ready():
+                # Should not reach here — process_jobs() gates on _calibration_ready().
+                raise RuntimeError(
+                    "post_process_and_save called before calibration is ready"
                 )
-                spec_for_correction = None
-            elif self.panel_spec_ref is None:
-                # Still below 6 m — panel factors only, no irradiance ratio yet.
-                spec_for_correction = np.asarray(self.panel_calib, dtype=np.float32)
             else:
                 # total_factor[i] = panel_factor[i] * (spec_ref[k] / spec_current[k])
                 # This corrects for irradiance changes (cloud cover, shade) relative
