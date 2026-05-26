@@ -26,6 +26,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import (
+    DurabilityPolicy,
     QoSProfile,
     ReliabilityPolicy,
     HistoryPolicy,
@@ -34,6 +35,7 @@ from rclpy.qos import (
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 from collections import deque
+from std_msgs.msg import Float32MultiArray
 from std_srvs.srv import Trigger
 from builtin_interfaces.msg import Time as BuiltinTime
 
@@ -64,6 +66,15 @@ try:
 except ImportError:
     AS7265xCal = None
 
+# AS7265x band indices for each cam0 slice — nearest wavelength to each
+# camera filter centre. Used to map the 18-band spectrometer to the 4 camera
+# bands when computing the per-cycle irradiance ratio correction.
+#   slice 0 (450 nm) → index  2 (460 nm)
+#   slice 1 (695 nm) → index  9 (705 nm)
+#   slice 2 (735 nm) → index 14 (730 nm)
+#   slice 3 (850 nm) → index 17 (860 nm)
+_CAM0_SPEC_IDX = (2, 9, 14, 17)
+
 # RELIABLE QoS for navigation/sensor data — these topics use RELIABLE
 # and must not be dropped (INS, radalt, spectrometer, PPS).
 sns_qos = QoSProfile(
@@ -87,6 +98,14 @@ pps_qos = QoSProfile(
 # DDS QoS incompatibility; no messages flow. For image data, BEST_EFFORT is
 # correct: a missed frame is recovered on the next PPS cycle.
 img_qos = qos_profile_sensor_data
+
+# TRANSIENT_LOCAL (latched) QoS for the MicaCRPCal panel calibration topic.
+# depth=1 so late subscribers always receive the single retained message.
+panel_cal_qos = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    depth=1,
+)
 
 
 def deg_to_dms_rational(deg_float):
@@ -137,7 +156,8 @@ class SyncNode(Node):
             860,  # ind 17: nearest to 850nm filter
         ]
         self.current_raw_spec = None
-        self.panel_calib = None
+        self.panel_calib = None      # 4 per-band factors from MicaCRPCal
+        self.panel_spec_ref = None   # 18-band irradiance reference from AutoCalNode
 
         db_path = os.path.join(
             os.path.expanduser("~"), self.get_parameter("dir_name").value
@@ -245,6 +265,23 @@ class SyncNode(Node):
             self.get_logger().warn(
                 "as7265x_at_msgs not available — spectrometer SUB disabled"
             )
+
+        # 5. MicaCRPCal panel calibration factors (latched).
+        self.create_subscription(
+            Float32MultiArray,
+            "/panel_cal/irradiance",
+            self._panel_cal_cb,
+            qos_profile=panel_cal_qos,
+        )
+        # AutoCalNode irradiance reference — 18-band spectrometer snapshot taken
+        # once the drone clears 6 m AGL (above any shadow that may have been on
+        # the calibration panel). Used to compute the per-cycle irradiance ratio.
+        self.create_subscription(
+            Float32MultiArray,
+            "/panel_cal/spec_ref",
+            self._panel_spec_ref_cb,
+            qos_profile=panel_cal_qos,
+        )
 
         self.get_logger().info("Sync Node Started. Waiting for PPS Trigger.")
 
@@ -374,18 +411,13 @@ class SyncNode(Node):
     # spectrometer reading for panel calibration instead of relying on
     # PPS-cycle state that may already have been cleared.
     def capture_panel_callback(self, request, response):
-        """Store the panel spectral reading as the white reference."""
-        if self.current_raw_spec is None:
-            response.success = False
-            response.message = "No data received from sensor yet."
-            return response
-
-        self.panel_calib = list(self.current_raw_spec)
-        response.success = True
+        """Deprecated — panel calibration is now handled by the MicaCRPCal node."""
+        response.success = False
         response.message = (
-            f"Captured panel calibration for {len(self.panel_calib)} bands."
+            "This service is deprecated. Run the MicaCRPCal panel_scan node before "
+            "flight and hold the CRP panel under cam0 with the QR tag visible."
         )
-        self.get_logger().info(response.message)
+        self.get_logger().warn(response.message)
         return response
 
     def putParameters(self, dev_key, res, intr1, intr2, extr):
@@ -466,6 +498,18 @@ class SyncNode(Node):
     def spec_cb(self, msg):
         self.current_raw_spec = list(msg.values)
         self.assign_to_job("spec", msg)
+
+    def _panel_cal_cb(self, msg: Float32MultiArray) -> None:
+        self.panel_calib = list(msg.data)
+        self.get_logger().info(
+            f"Panel calibration received: {len(self.panel_calib)} band factors"
+        )
+
+    def _panel_spec_ref_cb(self, msg: Float32MultiArray) -> None:
+        self.panel_spec_ref = list(msg.data)
+        self.get_logger().info(
+            f"Irradiance reference received: {len(self.panel_spec_ref)} bands"
+        )
 
     # --- 3. Processing and Saving ---
     def image_save(self, img, filename, pose):
@@ -604,45 +648,18 @@ class SyncNode(Node):
                         if job["data"][key] is None:
                             self.get_logger().warn(f"    job['data'][{key}] is None")
 
-    def compute_reflectance(self, spec_vals):
-        if self.panel_calib is None:
-            return None
-
-        if len(self.panel_calib) != len(spec_vals):
-            self.get_logger.warn(
-                "Panel calibration length does not match current spectrometer \
-                values. \nSkipping reflectance calculation."
-            )
-            return None
-
-        reflectance = []
-        for sample, panel in zip(spec_vals, self.panel_calib):
-            # Reflectance = Current / Panel_Reference
-            # Assuming the panel is a 1.0 lambertian reflector
-            val = (sample / panel) if panel != 0 else 0.0
-            reflectance.append(float(val))
-        return reflectance
-
     def post_process_and_save(self, data, stamp):
-        """
-        Apply MicaSense-style correction using AS7265x data, then save.
-
-        Single-pass split + per-band reflectance (cam0) / debayer (cam1) is
-        delegated to the C++ extension `spectral_correct`. The spectrometer-
-        derived publishers (reflectance, NDVI, total intensity, peak band)
-        run alongside, when AS7265x data is present.
-        """
+        """Apply per-band reflectance correction and save images + DB record."""
         try:
             pose = data["pose"]
             radalt = data["radalt"].altitude
             time_str = f"{stamp.sec}.{str(stamp.nanosec).rjust(9, '0')}"
             self.get_logger().info(f"Saving data frame at timestep {time_str}")
 
-            # Extract spectral values — msg.values in ROS2 Iron returns a numpy
-            # array for float32[] fields, so handle both message and raw array.
-            _spec = data["spec"]
+            # Extract current spectrometer values for the irradiance ratio correction.
+            _spec_msg = data["spec"]
             spec_np = np.asarray(
-                _spec if isinstance(_spec, np.ndarray) else _spec.values,
+                _spec_msg if isinstance(_spec_msg, np.ndarray) else _spec_msg.values,
                 dtype=np.float32,
             )
 
@@ -656,15 +673,24 @@ class SyncNode(Node):
 
             if self.panel_calib is None:
                 self.get_logger().error(
-                    "No panel calibration captured — spectral correction skipped "
-                    "(images will not be reflectance-corrected). "
-                    "Call the spectrometer/capture_panel service before flight."
+                    "No panel calibration received — spectral correction skipped. "
+                    "Run MicaCRPCal before flight and hold the CRP under cam0.",
+                    throttle_duration_sec=10.0,
                 )
                 spec_for_correction = None
+            elif self.panel_spec_ref is None:
+                # Still below 6 m — panel factors only, no irradiance ratio yet.
+                spec_for_correction = np.asarray(self.panel_calib, dtype=np.float32)
             else:
-                spec_for_correction = np.asarray(
-                    self.compute_reflectance(spec_np), dtype=np.float32
-                )
+                # total_factor[i] = panel_factor[i] * (spec_ref[k] / spec_current[k])
+                # This corrects for irradiance changes (cloud cover, shade) relative
+                # to the reference captured when the drone first cleared 6 m AGL.
+                total = []
+                for i, k in enumerate(_CAM0_SPEC_IDX):
+                    cur = float(spec_np[k])
+                    irr_ratio = float(self.panel_spec_ref[k]) / cur if cur > 0.0 else 1.0
+                    total.append(float(self.panel_calib[i]) * irr_ratio)
+                spec_for_correction = np.asarray(total, dtype=np.float32)
 
             corrected_cam0 = process_cam0(cam0_raw, spec_for_correction)  # 4 × (H,W/4)
             for _i, _band in enumerate(corrected_cam0):
