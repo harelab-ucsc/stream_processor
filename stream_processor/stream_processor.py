@@ -159,6 +159,11 @@ class SyncNode(Node):
         self.panel_calib = None      # 4 per-band factors from MicaCRPCal
         self.panel_spec_ref = None   # 18-band irradiance reference from AutoCalNode
 
+        self.declare_parameter("require_calibration", True)
+        self._require_calibration: bool = (
+            self.get_parameter("require_calibration").value
+        )
+
         db_path = os.path.join(
             os.path.expanduser("~"), self.get_parameter("dir_name").value
         )
@@ -411,7 +416,7 @@ class SyncNode(Node):
     # spectrometer reading for panel calibration instead of relying on
     # PPS-cycle state that may already have been cleared.
     def capture_panel_callback(self, request, response):
-        """Deprecated — panel calibration is now handled by the MicaCRPCal node."""
+        """Reject the request; use MicaCRPCal panel_scan for panel calibration."""
         response.success = False
         response.message = (
             "This service is deprecated. Run the MicaCRPCal panel_scan node before "
@@ -586,6 +591,8 @@ class SyncNode(Node):
         return all(v is not None for v in job["data"].values())
 
     def _calibration_ready(self) -> bool:
+        if not self._require_calibration:
+            return True
         return self.panel_calib is not None and self.panel_spec_ref is not None
 
     def log_sync_diagnostics(self, job):
@@ -686,15 +693,22 @@ class SyncNode(Node):
                 data["cam1"], desired_encoding="passthrough"
             )
 
-            if not self._calibration_ready():
+            if not self._require_calibration and self.panel_calib is None:
+                # Test / force_cal mode with no calibration data — skip correction.
+                spec_for_correction = None
+            elif not self._calibration_ready():
                 # Should not reach here — process_jobs() gates on _calibration_ready().
                 raise RuntimeError(
                     "post_process_and_save called before calibration is ready"
                 )
+            elif self.panel_spec_ref is None:
+                # panel_calib present but no irradiance reference yet (shouldn't
+                # happen in normal flight; panel_spec_ref arrives with auto_cal).
+                spec_for_correction = np.asarray(self.panel_calib, dtype=np.float32)
             else:
                 # total_factor[i] = panel_factor[i] * (spec_ref[k] / spec_current[k])
-                # This corrects for irradiance changes (cloud cover, shade) relative
-                # to the reference captured when the drone first cleared 6 m AGL.
+                # Corrects for irradiance changes relative to the reference captured
+                # when the drone first cleared 6 m AGL.
                 total = []
                 for i, k in enumerate(_CAM0_SPEC_IDX):
                     cur = float(spec_np[k])

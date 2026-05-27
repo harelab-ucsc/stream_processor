@@ -22,12 +22,9 @@ def _apply_correction(panel_calib, panel_spec_ref, spec_np):
     """
     Compute spec_for_correction exactly as post_process_and_save does.
 
-    Returns:
-        np.ndarray of shape (4,) float32  — when both panel_calib and
-            panel_spec_ref are available.
-        np.ndarray of shape (4,) float32  — raw panel_calib when spec_ref
-            is None.
-        None                               — when panel_calib is None.
+    Returns (4,) float32 with irradiance-ratio correction when both inputs are
+    set, (4,) float32 raw panel_calib when spec_ref is None, or None when
+    panel_calib is None.
     """
     if panel_calib is None:
         return None
@@ -54,11 +51,12 @@ class TestSpecBandMapping:
 
     def test_expected_indices(self):
         """
-        Mapping from camera band to AS7265x spectrometer index:
-          slice 0 (450 nm) → index  2 (460 nm)
-          slice 1 (695 nm) → index  9 (705 nm)
-          slice 2 (735 nm) → index 14 (730 nm)
-          slice 3 (850 nm) → index 17 (860 nm)
+        Verify camera-band to spectrometer-index mapping.
+
+        slice 0 (450 nm) to index 2 (460 nm),
+        slice 1 (695 nm) to index 9 (705 nm),
+        slice 2 (735 nm) to index 14 (730 nm),
+        slice 3 (850 nm) to index 17 (860 nm).
         """
         assert _CAM0_SPEC_IDX == (2, 9, 14, 17)
 
@@ -101,10 +99,7 @@ class TestIrradianceCorrectionFormula:
         np.testing.assert_array_almost_equal(result, panel_calib, decimal=5)
 
     def test_doubled_current_irradiance_halves_factors(self):
-        """
-        If irradiance during flight is 2× the calibration reference,
-        each factor should be halved to compensate.
-        """
+        """Halve each factor when in-flight irradiance is 2× the reference."""
         panel_calib = [1.6, 2.0, 1.8, 2.4]
         spec_ref = np.full(18, 500.0, dtype=np.float32)
         spec_cur = np.full(18, 1000.0, dtype=np.float32)  # 2× brighter
@@ -113,10 +108,7 @@ class TestIrradianceCorrectionFormula:
             assert result[i] == pytest.approx(f * 0.5, rel=1e-5)
 
     def test_halved_current_irradiance_doubles_factors(self):
-        """
-        If irradiance during flight is ½ the calibration reference (e.g. shade),
-        each factor should double to compensate.
-        """
+        """Double each factor when in-flight irradiance is half the reference."""
         panel_calib = [1.0, 1.0, 1.0, 1.0]
         spec_ref = np.full(18, 1000.0, dtype=np.float32)
         spec_cur = np.full(18, 500.0, dtype=np.float32)   # 0.5× reference
@@ -125,10 +117,7 @@ class TestIrradianceCorrectionFormula:
             assert f == pytest.approx(2.0, rel=1e-5)
 
     def test_per_band_correction_uses_correct_spec_index(self):
-        """
-        Each camera band must use its mapped spectrometer index, not a
-        neighbouring index.
-        """
+        """Each camera band uses its mapped spectrometer index."""
         panel_calib = [1.0, 1.0, 1.0, 1.0]
         spec_ref = np.ones(18, dtype=np.float32) * 100.0
         spec_cur = np.ones(18, dtype=np.float32) * 100.0
@@ -222,11 +211,7 @@ class TestPanelCalibCallbacks:
         assert panel_spec_ref[17] == 17
 
     def test_latched_panel_cal_persists_across_cycles(self):
-        """
-        panel_calib must be set once and used for every subsequent cycle
-        without being reset.  Simulate 5 image cycles and verify the factor
-        is applied consistently.
-        """
+        """Panel calibration factors are applied identically across all cycles."""
         panel_calib = [1.5, 2.0, 1.8, 2.2]
         spec_ref = np.full(18, 1000.0, dtype=np.float32)
 
