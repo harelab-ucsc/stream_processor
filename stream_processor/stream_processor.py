@@ -311,6 +311,7 @@ class SyncNode(Node):
 
         threading.Thread(target=self._queue_watchdog, daemon=True).start()
         threading.Thread(target=self._cpu_temp_watchdog, daemon=True).start()
+        threading.Thread(target=self._calibration_watchdog, daemon=True).start()
 
     def dirCheck(self):
         if not os.path.isdir(self.dir_name):
@@ -777,6 +778,30 @@ class SyncNode(Node):
             self.get_logger().error(
                 f"[THREAD] Failed to save: {ex}\n{traceback.format_exc()}"
             )
+
+    def _calibration_watchdog(self, timeout: float = 60.0, repeat: float = 30.0) -> None:
+        """Log a loud error if calibration hasn't arrived after `timeout` seconds."""
+        time.sleep(timeout)
+        if self._calibration_ready():
+            return
+        sep = "=" * 62
+        while not self._calibration_ready():
+            missing = []
+            if self.panel_calib is None:
+                missing.append("/panel_cal/irradiance (panel_scan node)")
+            if self.panel_spec_ref is None:
+                missing.append("/panel_cal/spec_ref  (auto_cal node)")
+            self.get_logger().error(
+                f"\n{sep}\n"
+                f"  CALIBRATION NOT RECEIVED after {timeout:.0f} s\n"
+                f"  Still waiting for:\n"
+                + "".join(f"    - {m}\n" for m in missing)
+                + f"  Images are being DISCARDED until calibration arrives.\n"
+                f"  Check that mica_crp_cal is built and auto_cal/panel_scan\n"
+                f"  nodes are running (`ros2 node list | grep cal`).\n"
+                f"{sep}"
+            )
+            time.sleep(repeat)
 
     def _queue_watchdog(self):
         while rclpy.ok():
