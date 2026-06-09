@@ -133,7 +133,12 @@ class SyncNode(Node):
         self.declare_parameter("dir_name", "parsed_flight")
         self.dir_name = self.get_parameter("dir_name").value
         self.dir_name = os.path.join(os.path.expanduser("~"), self.dir_name)
-        self.dirCheck()
+
+        self.declare_parameter("publish_mode", False)
+        self._publish_mode = self.get_parameter("publish_mode").value
+
+        if not self._publish_mode:
+            self.dirCheck()
 
         self.spectrometer_wavelengths = [
             410,
@@ -164,19 +169,20 @@ class SyncNode(Node):
             self.get_parameter("require_calibration").value
         )
 
-        db_path = os.path.join(
-            os.path.expanduser("~"), self.get_parameter("dir_name").value
-        )
-        os.makedirs(db_path, exist_ok=True)
-        self.dbc = dbConnector(
-            os.path.join(db_path, self.get_parameter("db_name").value)
-        )
-        self.dbc.boot(self.get_parameter("db_name").value, self.sensor_id)
-        os.chmod(
-            os.path.join(self.dir_name, self.db_name + ".db"),
-            stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO,
-        )
-        time.sleep(1)
+        if not self._publish_mode:
+            db_path = os.path.join(
+                os.path.expanduser("~"), self.get_parameter("dir_name").value
+            )
+            os.makedirs(db_path, exist_ok=True)
+            self.dbc = dbConnector(
+                os.path.join(db_path, self.get_parameter("db_name").value)
+            )
+            self.dbc.boot(self.get_parameter("db_name").value, self.sensor_id)
+            os.chmod(
+                os.path.join(self.dir_name, self.db_name + ".db"),
+                stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO,
+            )
+            time.sleep(1)
 
         # sensor calibration parameters
         # default = "sensor_params/birdsEyeSensorParams.yaml"
@@ -190,7 +196,8 @@ class SyncNode(Node):
         # self.declare_parameter("clicks_csv", "catch/data__2025_01_10.csv")
         self.clicks_csv = self.get_parameter("clicks_csv").value
         self.clicks_csv = os.path.join(os.path.expanduser("~"), self.clicks_csv)
-        self.csv_read()
+        if not self._publish_mode:
+            self.csv_read()
 
         # --- Camera framerate
         self.declare_parameter("framerate", 3.0)
@@ -227,6 +234,11 @@ class SyncNode(Node):
         # Allow slight negative offset (INS may beat PPS)
         self.pretrigger_tolerance = 0.01
 
+        self._required_keys = (
+            {"cam0", "cam1"} if self._publish_mode
+            else {"cam0", "cam1", "pose", "spec", "radalt"}
+        )
+
         # --- Subscriptions ---
         self.create_subscription(
             BuiltinTime, "/pps/time", self.pps_cb, qos_profile=pps_qos
@@ -240,76 +252,90 @@ class SyncNode(Node):
             Image, "/cam1/camera_node/image_raw", self.cam1_cb, qos_profile=img_qos
         )
 
-        # 3. Navigation & Environment
-        if DIDINS2 is not None:
+        # 3. Navigation & Environment (not needed in publish_mode)
+        if not self._publish_mode:
+            if DIDINS2 is not None:
+                self.create_subscription(
+                    DIDINS2, "/ins_quat_uvw_lla", self.ins_cb, qos_profile=sns_qos
+                )
+            else:
+                self.get_logger().warn(
+                    "inertial_sense_ros2 not available — INS SUB disabled"
+                )
+            if AltSNR is not None:
+                self.create_subscription(
+                    AltSNR, "/rad_altitude", self.radalt_cb, qos_profile=sns_qos
+                )
+            else:
+                self.get_logger().warn(
+                    "custom_msgs not available — radar altimeter SUB disabled"
+                )
+
+            # 4. AS7265x Spectrometer (For Reflectance)
+            if AS7265xCal is not None:
+                self.create_subscription(
+                    AS7265xCal,
+                    "/as7265x/calibrated_values",
+                    self.spec_cb,
+                    qos_profile=sns_qos,
+                )
+            else:
+                self.get_logger().warn(
+                    "as7265x_at_msgs not available — spectrometer SUB disabled"
+                )
+
+            # 5. MicaCRPCal panel calibration factors (latched).
             self.create_subscription(
-                DIDINS2, "/ins_quat_uvw_lla", self.ins_cb, qos_profile=sns_qos
+                Float32MultiArray,
+                "/panel_cal/irradiance",
+                self._panel_cal_cb,
+                qos_profile=panel_cal_qos,
             )
-        else:
-            self.get_logger().warn(
-                "inertial_sense_ros2 not available — INS SUB disabled"
-            )
-        if AltSNR is not None:
+            # AutoCalNode irradiance reference — 18-band spectrometer snapshot taken
+            # once the drone clears 6 m AGL (above any shadow that may have been on
+            # the calibration panel). Used to compute the per-cycle irradiance ratio.
             self.create_subscription(
-                AltSNR, "/rad_altitude", self.radalt_cb, qos_profile=sns_qos
-            )
-        else:
-            self.get_logger().warn(
-                "custom_msgs not available — radar altimeter SUB disabled"
+                Float32MultiArray,
+                "/panel_cal/spec_ref",
+                self._panel_spec_ref_cb,
+                qos_profile=panel_cal_qos,
             )
 
-        # 4. AS7265x Spectrometer (For Reflectance)
-        if AS7265xCal is not None:
-            self.create_subscription(
-                AS7265xCal,
-                "/as7265x/calibrated_values",
-                self.spec_cb,
-                qos_profile=sns_qos,
-            )
-        else:
-            self.get_logger().warn(
-                "as7265x_at_msgs not available — spectrometer SUB disabled"
-            )
-
-        # 5. MicaCRPCal panel calibration factors (latched).
-        self.create_subscription(
-            Float32MultiArray,
-            "/panel_cal/irradiance",
-            self._panel_cal_cb,
-            qos_profile=panel_cal_qos,
-        )
-        # AutoCalNode irradiance reference — 18-band spectrometer snapshot taken
-        # once the drone clears 6 m AGL (above any shadow that may have been on
-        # the calibration panel). Used to compute the per-cycle irradiance ratio.
-        self.create_subscription(
-            Float32MultiArray,
-            "/panel_cal/spec_ref",
-            self._panel_spec_ref_cb,
-            qos_profile=panel_cal_qos,
-        )
+        if self._publish_mode:
+            # Publish 8 split images per PPS cycle so they can be recorded with ros2 bag.
+            self._cam0_pubs = [
+                self.create_publisher(Image, f'/sync/cam0_band_{i}', 10)
+                for i in range(4)
+            ]
+            self._cam1_pubs = [
+                self.create_publisher(Image, f'/sync/cam1_rgb_{i}', 10)
+                for i in range(4)
+            ]
 
         self.get_logger().info("Sync Node Started. Waiting for PPS Trigger.")
 
-        # --- Services ---
-        self.capture_panel_srv = self.create_service(
-            Trigger, "spectrometer/capture_panel", self.capture_panel_callback
-        )
+        if not self._publish_mode:
+            # --- Services ---
+            self.capture_panel_srv = self.create_service(
+                Trigger, "spectrometer/capture_panel", self.capture_panel_callback
+            )
 
-        # --- Producer/consumer save queue ---
-        self.save_queue = queue.Queue()
-        self._save_workers = []
-        for _ in range(8):
-            t = threading.Thread(target=self._save_worker, daemon=True)
-            t.start()
-            self._save_workers.append(t)
+            # --- Producer/consumer save queue ---
+            self.save_queue = queue.Queue()
+            self._save_workers = []
+            for _ in range(8):
+                t = threading.Thread(target=self._save_worker, daemon=True)
+                t.start()
+                self._save_workers.append(t)
 
-        # Single serialised DB writer — eliminates concurrent sqlite3 write-lock
-        # races that produce "database is locked" errors.
-        self._db_queue = queue.Queue()
-        self._db_writer_thread = threading.Thread(target=self._db_writer, daemon=True)
-        self._db_writer_thread.start()
+            # Single serialised DB writer — eliminates concurrent sqlite3 write-lock
+            # races that produce "database is locked" errors.
+            self._db_queue = queue.Queue()
+            self._db_writer_thread = threading.Thread(target=self._db_writer, daemon=True)
+            self._db_writer_thread.start()
 
-        threading.Thread(target=self._queue_watchdog, daemon=True).start()
+            threading.Thread(target=self._queue_watchdog, daemon=True).start()
+
         threading.Thread(target=self._cpu_temp_watchdog, daemon=True).start()
         threading.Thread(target=self._calibration_watchdog, daemon=True).start()
 
@@ -589,7 +615,7 @@ class SyncNode(Node):
                     dst.write(img[:, :, b], b + 1)
 
     def is_complete(self, job):
-        return all(v is not None for v in job["data"].values())
+        return all(job["data"].get(k) is not None for k in self._required_keys)
 
     def _calibration_ready(self) -> bool:
         if not self._require_calibration:
@@ -662,7 +688,10 @@ class SyncNode(Node):
                         )
                     else:
                         self.log_sync_diagnostics(job)
-                        self.save_queue.put((job["data"], job["stamp_msg"]))
+                        if self._publish_mode:
+                            self.post_process_and_save(job["data"], job["stamp_msg"])
+                        else:
+                            self.save_queue.put((job["data"], job["stamp_msg"]))
                 else:
                     self.get_logger().warn(
                         f"PPS frame drop @ {job['pps_time']:.3f} (incomplete)"
@@ -672,26 +701,52 @@ class SyncNode(Node):
                             self.get_logger().warn(f"    job['data'][{key}] is None")
 
     def post_process_and_save(self, data, stamp):
-        """Apply per-band reflectance correction and save images + DB record."""
+        """Apply per-band reflectance correction and save or publish split images."""
         try:
+            time_str = f"{stamp.sec}.{str(stamp.nanosec).rjust(9, '0')}"
+            self.get_logger().info(
+                f"{'Publishing' if self._publish_mode else 'Saving'} frame at timestep {time_str}"
+            )
+
+            # Convert images — needed for both publish and save paths.
+            cam0_raw = self.br.imgmsg_to_cv2(
+                data["cam0"], desired_encoding="passthrough"
+            )
+            cam1_raw = self.br.imgmsg_to_cv2(
+                data["cam1"], desired_encoding="passthrough"
+            )
+
+            if self._publish_mode:
+                corrected_cam0 = process_cam0(cam0_raw, None)  # 4 × (H, W/4) float32
+                for _i, _band in enumerate(corrected_cam0):
+                    for _issue in check_slice_health(_band):
+                        self.get_logger().error(f"[IMG HEALTH] cam0[{_i}]: {_issue}")
+                cam1_rgb_list = process_cam1(cam1_raw)          # 4 × (H, W/4, 3)
+                for _i, _rgb in enumerate(cam1_rgb_list):
+                    for _issue in check_slice_health(_rgb):
+                        self.get_logger().error(f"[IMG HEALTH] cam1[{_i}]: {_issue}")
+                for i, band in enumerate(corrected_cam0):
+                    band_u16 = np.clip(band * 65535.0, 0, 65535).astype(np.uint16)
+                    img_msg = self.br.cv2_to_imgmsg(band_u16, encoding='mono16')
+                    img_msg.header.stamp = stamp
+                    self._cam0_pubs[i].publish(img_msg)
+                for i, rgb in enumerate(cam1_rgb_list):
+                    img_msg = self.br.cv2_to_imgmsg(rgb, encoding='bgr16')
+                    img_msg.header.stamp = stamp
+                    self._cam1_pubs[i].publish(img_msg)
+                self.get_logger().info(
+                    f"Cycle Complete: Published 8 split images at {time_str}"
+                )
+                return
+
             pose = data["pose"]
             radalt = data["radalt"].altitude
-            time_str = f"{stamp.sec}.{str(stamp.nanosec).rjust(9, '0')}"
-            self.get_logger().info(f"Saving data frame at timestep {time_str}")
 
             # Extract current spectrometer values for the irradiance ratio correction.
             _spec_msg = data["spec"]
             spec_np = np.asarray(
                 _spec_msg if isinstance(_spec_msg, np.ndarray) else _spec_msg.values,
                 dtype=np.float32,
-            )
-
-            # Convert images once
-            cam0_raw = self.br.imgmsg_to_cv2(
-                data["cam0"], desired_encoding="passthrough"
-            )
-            cam1_raw = self.br.imgmsg_to_cv2(
-                data["cam1"], desired_encoding="passthrough"
             )
 
             if not self._require_calibration and self.panel_calib is None:
@@ -867,26 +922,27 @@ class SyncNode(Node):
                 self.save_queue.task_done()
 
     def destroy_node(self):
-        # Snapshot depth before sentinels so we don't count them as pending work.
-        remaining = self.save_queue.qsize()
-        if remaining > 0:
-            self.get_logger().info(
-                f"Shutdown: waiting for {remaining} queued save(s) to finish..."
-            )
-            while not self.save_queue.empty():
+        if not self._publish_mode:
+            # Snapshot depth before sentinels so we don't count them as pending work.
+            remaining = self.save_queue.qsize()
+            if remaining > 0:
                 self.get_logger().info(
-                    f"  save queue: {self.save_queue.qsize()} job(s) remaining"
+                    f"Shutdown: waiting for {remaining} queued save(s) to finish..."
                 )
-                time.sleep(2.0)
+                while not self.save_queue.empty():
+                    self.get_logger().info(
+                        f"  save queue: {self.save_queue.qsize()} job(s) remaining"
+                    )
+                    time.sleep(2.0)
 
-        for _ in self._save_workers:
-            self.save_queue.put(None)
+            for _ in self._save_workers:
+                self.save_queue.put(None)
 
-        self.save_queue.join()
+            self.save_queue.join()
 
-        # Drain the DB writer after all image workers have flushed their inserts.
-        self._db_queue.put(None)
-        self._db_queue.join()
+            # Drain the DB writer after all image workers have flushed their inserts.
+            self._db_queue.put(None)
+            self._db_queue.join()
 
         super().destroy_node()
 
