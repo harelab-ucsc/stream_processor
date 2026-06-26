@@ -9,26 +9,28 @@ using stream_processor::spectral_correct::process_cam1;
 using stream_processor::spectral_correct::check_slice_health;
 
 PYBIND11_MODULE(_core, m) {
-    m.doc() = "Single-pass split + spectral correction (cam0) / debayer (cam1).";
+    m.doc() = "Single-pass split + reflectance correction (cam0) / debayer (cam1).";
 
     m.def("process_cam0", &process_cam0,
           py::arg("input"),
-          py::arg("spec_vals") = py::none(),
+          py::arg("cal_factors") = py::none(),
           py::arg("num_slices") = 4,
           R"doc(
 Split a full cam0 mono image into N reflectance-corrected float32 sub-images.
 
-Per slice i, divides each pixel by spec_vals[CAM0_ALIGNMENT[i]] when finite
-and > 0; otherwise passes through (cast to float32). Single pass, GIL released.
+Per slice i, applies: output = (raw_DN / dtype_max) * cal_factors[i]
+where cal_factors[i] = panel_albedo_i / (mean_panel_DN_i / dtype_max),
+computed by MicaCRPCal at boot from a camera image of the white panel.
+
+When cal_factors is None, factor=1.0 is used and output = raw_DN / dtype_max.
 
 Args:
     input: (H, W) uint8 or uint16 ndarray, C-contiguous.
-    spec_vals: 1-D float array of AS7265x calibrated values (>=15 entries),
-        or None for identity passthrough.
+    cal_factors: 4-element float32 array [F_0, F_1, F_2, F_3], or None.
     num_slices: must be 4.
 
 Returns:
-    List of 4 (H, W/4) float32 ndarrays, each owning its memory.
+    List of 4 (H, W/4) float32 ndarrays of true reflectance in [0, 1].
 )doc");
 
     m.def("process_cam1", &process_cam1,

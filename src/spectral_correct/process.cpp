@@ -13,38 +13,45 @@ namespace spectral_correct {
 
 namespace {
 
-// Resolve per-slice irradiance divisor. Returns 1.0f when missing/non-finite/
-// non-positive — matches existing Python tolerance (NaN > 0 is false, so the
-// original code already passes through identity for NaN).
-float resolve_irr(const float * spec_data, py::ssize_t spec_len, int slice_idx) {
-    const int spec_idx = CAM0_ALIGNMENT[slice_idx];
-    if (!spec_data || spec_idx >= spec_len) {
+// Resolve the per-slice calibration factor.
+// cal_data is a 4-element array [F_0 … F_3] produced by MicaCRPCal.
+// Returns 1.0f when missing/invalid — output becomes raw_DN / dtype_max ∈ [0,1].
+float resolve_factor(const float * cal_data, py::ssize_t cal_len, int slice_idx) {
+    if (!cal_data || slice_idx >= cal_len) {
+        std::fprintf(stderr,
+            "[spectral_correct] ERROR: no calibration factor for slice %d "
+            "(cal_len=%zd) — falling back to factor=1.0\n",
+            slice_idx, static_cast<ssize_t>(cal_len));
         return 1.0f;
     }
-    const float v = spec_data[spec_idx];
+    const float v = cal_data[slice_idx];
     if (!std::isfinite(v) || v <= 0.0f) {
+        std::fprintf(stderr,
+            "[spectral_correct] ERROR: calibration factor for slice %d "
+            "is invalid (%.6g) — falling back to factor=1.0\n",
+            slice_idx, static_cast<double>(v));
         return 1.0f;
     }
     return v;
 }
 
 template <typename T>
-void divide_slice(const py::array & in, py::array_t<float> & out,
-                  py::ssize_t slice_w, py::ssize_t slice_offset, float irr,
+void apply_factor(const py::array & in, py::array_t<float> & out,
+                  py::ssize_t slice_w, py::ssize_t slice_offset, float factor,
                   float dtype_max) {
     const py::ssize_t h = in.shape(0);
     const py::ssize_t in_stride_row = in.strides(0) / sizeof(T);
     const T * in_data = static_cast<const T *>(in.data());
     float * out_data = out.mutable_data();
-    // Normalize by dtype_max so output is in [0, 1/irr] ≈ [0, 1] reflectance.
-    // Without this, output = raw_dn / irr which is in the thousands for 16-bit input.
-    const float inv = 1.0f / (irr * dtype_max);
-
+    // output = (raw_DN / dtype_max) * factor → true reflectance ∈ [0, 1].
+    // factor = albedo / (mean_panel_DN / dtype_max), computed by MicaCRPCal.
+    // When factor = 1.0 (no calibration) output is simply raw_DN / dtype_max.
+    const float scale = factor / dtype_max;
     for (py::ssize_t y = 0; y < h; ++y) {
         const T * src_row = in_data + y * in_stride_row + slice_offset;
         float * dst_row = out_data + y * slice_w;
         for (py::ssize_t x = 0; x < slice_w; ++x) {
-            dst_row[x] = static_cast<float>(src_row[x]) * inv;
+            dst_row[x] = static_cast<float>(src_row[x]) * scale;
         }
     }
 }
@@ -53,7 +60,7 @@ void divide_slice(const py::array & in, py::array_t<float> & out,
 
 std::vector<py::array_t<float>> process_cam0(
     py::array input,
-    py::object spec_vals,
+    py::object cal_factors,
     int num_slices) {
     if (input.ndim() != 2) {
         throw std::invalid_argument(
@@ -62,7 +69,7 @@ std::vector<py::array_t<float>> process_cam0(
     }
     if (num_slices != 4) {
         throw std::invalid_argument(
-            "process_cam0: only num_slices=4 supported (CAM0_ALIGNMENT has 4 entries)");
+            "process_cam0: only num_slices=4 supported");
     }
 
     const py::ssize_t h = input.shape(0);
@@ -74,20 +81,22 @@ std::vector<py::array_t<float>> process_cam0(
             " too small for " + std::to_string(num_slices) + " slices");
     }
 
-    py::array_t<float> spec_arr;
-    const float * spec_data = nullptr;
-    py::ssize_t spec_len = 0;
-    if (!spec_vals.is_none()) {
-        spec_arr = py::array_t<float, py::array::c_style | py::array::forcecast>(spec_vals);
-        if (spec_arr.ndim() == 1) {
-            spec_data = spec_arr.data();
-            spec_len = spec_arr.shape(0);
+    // Parse cal_factors — expected to be a 4-element float32 array from MicaCRPCal,
+    // or None for uncalibrated passthrough (factor = 1.0 per slice).
+    py::array_t<float> cal_arr;
+    const float * cal_data = nullptr;
+    py::ssize_t cal_len = 0;
+    if (!cal_factors.is_none()) {
+        cal_arr = py::array_t<float, py::array::c_style | py::array::forcecast>(cal_factors);
+        if (cal_arr.ndim() == 1) {
+            cal_data = cal_arr.data();
+            cal_len  = cal_arr.shape(0);
         }
     }
 
-    float irr[4];
+    float factors[4];
     for (int i = 0; i < num_slices; ++i) {
-        irr[i] = resolve_irr(spec_data, spec_len, i);
+        factors[i] = resolve_factor(cal_data, cal_len, i);
     }
 
     std::vector<py::array_t<float>> outputs;
@@ -96,11 +105,6 @@ std::vector<py::array_t<float>> process_cam0(
         outputs.emplace_back(py::array_t<float>({h, slice_w}));
     }
 
-    // Accept any 1- or 2-byte integer dtype (signed or unsigned). cv_bridge's
-    // passthrough sometimes returns a non-canonical dtype that doesn't pass
-    // py::dtype::of<uint16_t>() identity comparison even though the bytes
-    // are uint16. Treat by itemsize; the divide-and-promote-to-float math
-    // is identical for signed and unsigned at our pixel-value ranges.
     const auto dt = input.dtype();
     const auto itemsize = dt.itemsize();
     const char kind = dt.kind();
@@ -120,9 +124,9 @@ std::vector<py::array_t<float>> process_cam0(
         for (int i = 0; i < num_slices; ++i) {
             const py::ssize_t offset = i * slice_w;
             if (is_8bit) {
-                divide_slice<uint8_t>(input, outputs[i], slice_w, offset, irr[i], dtype_max);
+                apply_factor<uint8_t>(input, outputs[i], slice_w, offset, factors[i], dtype_max);
             } else {
-                divide_slice<uint16_t>(input, outputs[i], slice_w, offset, irr[i], dtype_max);
+                apply_factor<uint16_t>(input, outputs[i], slice_w, offset, factors[i], dtype_max);
             }
         }
     }
@@ -149,8 +153,6 @@ std::vector<py::array> process_cam1(py::array input, int num_slices) {
             " too small for " + std::to_string(num_slices) + " slices");
     }
     if (slice_w % 2 != 0) {
-        // Bayer phase is preserved only on even-column splits. An odd split
-        // flips BG/GR alignment and produces wrong colors.
         throw std::invalid_argument(
             "process_cam1: slice width " + std::to_string(slice_w) +
             " must be even to preserve Bayer phase");
@@ -249,7 +251,6 @@ std::vector<std::string> check_slice_health(py::array slice) {
             sum += static_cast<double>(data[i]);
         }
     } else {
-        // Unsupported dtype — skip silently
         return issues;
     }
 
