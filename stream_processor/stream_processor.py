@@ -468,7 +468,7 @@ class SyncNode(Node):
                 "cam1": None,
                 "pose": None,
                 "spec": None,
-                "radalt": None,
+                # "radalt": None,
             },
             "dt": {},  # diagnostics
         }
@@ -726,6 +726,7 @@ class SyncNode(Node):
             for _i, _rgb in enumerate(cam1_rgb_list):
                 for _issue in check_slice_health(_rgb):
                     self.get_logger().error(f"[IMG HEALTH] cam1[{_i}]: {_issue}")
+
             # Convert pose lat-lon -> UTM
             # returns easting, northing, zone number, zone letter
             u = utm.from_latlon(pose.lla[0], pose.lla[1])
@@ -734,14 +735,14 @@ class SyncNode(Node):
             paths = []
             for i, img in enumerate(corrected_cam0):
                 filename = os.path.join(
-                    self.dir_name, f"cam0_{i}_{time_str}{self.img_format}"
+                    self.dir_name, f"multispec_{i}_{time_str}{self.img_format}"
                 )
                 paths.append(filename)
                 self.image_save(img, filename, pose)
 
             for i, img in enumerate(cam1_rgb_list):
                 filename = os.path.join(
-                    self.dir_name, f"cam1_{i}_{time_str}{self.img_format}"
+                    self.dir_name, f"rgb_{i}_{time_str}{self.img_format}"
                 )
                 paths.append(filename)
                 self.image_save(img, filename, pose)
