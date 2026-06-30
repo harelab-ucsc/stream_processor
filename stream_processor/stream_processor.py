@@ -118,6 +118,43 @@ def deg_to_dms_rational(deg_float):
     return [(deg, 1), (minute, 1), (sec, 1000000)]
 
 
+class RigCalibration:
+
+    def __init__(self, yaml_path):
+        with open(yaml_path, "r") as f:
+            self.data = yaml.safe_load(f)
+
+    def get_camera_info(self, cam_name):
+        cam = self.data["cameras"][cam_name]
+
+        intr = cam["intrinsics"]
+        dist = cam["distortion"]
+        res  = cam["resolution"]
+        T_cam_ins = cam["T_cam_ins"]
+
+        K = np.array([
+            [intr["fx"], 0.0, intr["cx"]],
+            [0.0, intr["fy"], intr["cy"]],
+            [0.0, 0.0, 1.0]
+        ], dtype=np.float64)
+
+        D = np.array([
+            dist["k1"],
+            dist["k2"],
+            dist["p1"],
+            dist["p2"],
+            dist.get("k3", 0.0)
+        ], dtype=np.float64)
+
+        return {
+            "K": K,
+            "D": D,
+            "T_cam_ins": T_cam_ins,
+            "width": res["width"],
+            "height": res["height"]
+        }
+
+
 class SyncNode(Node):
     def __init__(self):
         super().__init__("sync_node")
@@ -134,6 +171,33 @@ class SyncNode(Node):
         self.dir_name = self.get_parameter("dir_name").value
         self.dir_name = os.path.join(os.path.expanduser("~"), self.dir_name)
         self.dirCheck()
+
+        # load camera calibration
+        self.declare_parameter("calibration_path", "")
+        self.dir_name = self.get_parameter("calibration_path").value
+        self.calib = RigCalibration(calibration_path)
+        self.camera_models = {}
+        for sensor in ["rgb", "multispec"]:
+            for ind in [1,2,3,4]:
+
+                cam_name = f"{sensor}_{ind}"
+
+                cam = self.calib.get_camera_info(cam_name)
+
+                map1, map2 = cv2.initUndistortRectifyMap(
+                    cam["K"],
+                    cam["D"],
+                    None,
+                    cam["K"],
+                    (cam["width"], cam["height"]),
+                    cv2.CV_32FC1
+                )
+
+                self.camera_models[cam_name] = {
+                    "cam": cam,
+                    "map1": map1,
+                    "map2": map2,
+                }
 
         self.spectrometer_wavelengths = [
             410,
@@ -177,14 +241,6 @@ class SyncNode(Node):
             stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO,
         )
         time.sleep(1)
-
-        # sensor calibration parameters
-        # default = "sensor_params/birdsEyeSensorParams.yaml"
-        # self.declare_parameter("sensors_yaml", default)
-        # self.sensors_yaml = self.get_parameter("sensors_yaml").value
-        # self.sensors_yaml = os.path.join(
-        #     os.path.expanduser("~"), self.sensors_yaml)
-        # self.calibUptake()
 
         self.declare_parameter("clicks_csv", "catch/data.csv")
         # self.declare_parameter("clicks_csv", "catch/data__2025_01_10.csv")
@@ -288,6 +344,12 @@ class SyncNode(Node):
             qos_profile=panel_cal_qos,
         )
 
+        self.capture_pub = self.create_publisher(
+            CaptureComplete,
+            "/sync/capture_complete",
+            10,
+        )
+
         self.get_logger().info("Sync Node Started. Waiting for PPS Trigger.")
 
         # --- Services ---
@@ -361,55 +423,6 @@ class SyncNode(Node):
         self.dbc.insertClicks(f"clicks_{self.db_name}", data)
         self.get_logger().info("...Done reading clicks CSV file.\n")
 
-    def calibUptake(self):
-        self.get_logger().info(
-            f"Reading sensor parameters YAML file: {self.sensors_yaml}..."
-        )
-        devices = [self.sensor_id, "ins", "radalt"]
-        res = None
-        intr1 = None
-        intr2 = None
-        extr = None
-        with open(self.sensors_yaml, "r") as f:
-            params = yaml.safe_load(f)
-            for device in devices:
-                data = params[device]
-                if device == self.sensor_id:
-                    self.res = data["resolution"]
-                    self.K = data["intrinsics"]
-                    self.dist = data["distortion_coeffs"]
-                    self.extr = data["T_cam_imu"]
-                    self.extr = utilities.matrix_list_converter(self.extr, (4, 4))
-                    res = self.res
-                    intr1 = self.K
-                    intr2 = self.dist
-                    extr = self.extr
-                    self.putParameters(device, res, intr1, intr2, extr)
-                elif device == "ins":
-                    intr1 = [
-                        data["accelerometer_noise_density"],
-                        data["accelerometer_random_walk"],
-                    ]
-                    intr2 = [
-                        data["gyroscope_noise_density"],
-                        data["gyroscope_random_walk"],
-                    ]
-                    self.putParameters(device, res, intr1, intr2, extr)
-                elif device == "radalt":
-                    extr = data["T_rad_imu"]
-                    self.putParameters(
-                        device,
-                        res,
-                        intr1,
-                        intr2,
-                        utilities.matrix_list_converter(extr, (4, 4)),
-                    )
-                res = None
-                intr1 = None
-                intr2 = None
-                extr = None
-        self.get_logger().info("  Done reading sensor parameters YAML file.\n")
-
     # From micasense_spectrometer_bridge.py:
     # Cleaned it up a bit:
     # Add a persistent current_raw_spec buffer so capture_panel_callback
@@ -425,30 +438,6 @@ class SyncNode(Node):
         )
         self.get_logger().warn(response.message)
         return response
-
-    def putParameters(self, dev_key, res, intr1, intr2, extr):
-        vals = '"'
-        cols = "sensorID, resolution, intrinsics1, intrinsics2, extrinsics"
-        valsList = [dev_key, res, intr1, intr2, extr]
-        vals += '","'.join([str(x) for x in valsList])
-        vals += '"'
-        self.dbc.insertIgnoreInto(f"parameters_{self.db_name}", cols, vals)
-
-    def getParameters(self, device_key):
-        params = []
-        cols = "sensorID, resolution, intrinsics1, intrinsics2, extrinsics"
-        table = f"parameters_{self.db_name}"
-        ret = self.dbc.getFrom(cols, table, cond=f'WHERE sensorID = "{device_key}"')
-        for elem in ret:
-            for i, item in enumerate(elem):
-                if item == device_key:
-                    params.append(item)
-                elif item != "None":
-                    tmp = utilities.string_list_converter(item)
-                    if item == elem[-1]:
-                        tmp = utilities.matrix_list_converter(tmp, (4, 4))
-                    params.append(tmp)
-        return params
 
     def get_msg_time(self, msg):
         try:
@@ -489,15 +478,10 @@ class SyncNode(Node):
         # Check if Strobed
         if msg.hdw_status & self.HDW_STROBE == self.HDW_STROBE:
             # self.get_logger().info('    ---> STROBED')
-            tmp = (msg.ins_status) & self.INS_STATUS_GPS_NAV_FIX_MASK
-            self.RTK_STATUS = tmp >> self.INS_STATUS_GPS_NAV_FIX_OFFSET
-            tmp = (msg.ins_status) & self.INS_STATUS_SOLUTION_MASK
-            self.INS_STATUS = tmp >> self.INS_STATUS_SOLUTION_OFFSET
-
             self.assign_to_job("pose", msg)
 
     def radalt_cb(self, msg):
-        if msg.snr > 13:
+        if msg.snr > 13:  # manufacturer-specified SNR floor
             self.assign_to_job("radalt", msg)
 
     # saves lists in case of a change in msg.values
@@ -532,23 +516,7 @@ class SyncNode(Node):
         elif self.img_format == ".png":
             cv2.imwrite(filename, img)
         elif self.img_format == ".jpg":
-            if img.dtype == np.uint16:
-                img = (img >> 8).astype(np.uint8)
-            pil_img = Img.fromarray(img)
-            if pose is not None:
-                lla = pose.lla
-                gps_ifd = {
-                    piexif.GPSIFD.GPSLatitudeRef: "N" if lla[0] >= 0 else "S",
-                    piexif.GPSIFD.GPSLatitude: deg_to_dms_rational(abs(lla[0])),
-                    piexif.GPSIFD.GPSLongitudeRef: "E" if lla[1] >= 0 else "W",
-                    piexif.GPSIFD.GPSLongitude: deg_to_dms_rational(abs(lla[1])),
-                    piexif.GPSIFD.GPSAltitudeRef: 0,
-                    piexif.GPSIFD.GPSAltitude: (int(lla[2] * 100), 100),
-                }
-                exif_bytes = piexif.dump({"GPS": gps_ifd})
-                pil_img.save(filename, exif=exif_bytes, format="JPEG", quality=95)
-            else:
-                pil_img.save(filename, format="JPEG", quality=95)
+            self._save_geojpeg(img, filename, pose)
 
     def _save_geotiff(self, img, filename, pose):
         """Write a georeferenced uint16 GeoTIFF using the INS position."""
@@ -587,6 +555,25 @@ class SyncNode(Node):
             else:
                 for b in range(bands):
                     dst.write(img[:, :, b], b + 1)
+
+    def _save_geojpeg(self, img, filename, pose):
+        if img.dtype == np.uint16:
+            img = (img >> 8).astype(np.uint8)
+        pil_img = Img.fromarray(img)
+        if pose is not None:
+            lla = pose.lla
+            gps_ifd = {
+                piexif.GPSIFD.GPSLatitudeRef: "N" if lla[0] >= 0 else "S",
+                piexif.GPSIFD.GPSLatitude: deg_to_dms_rational(abs(lla[0])),
+                piexif.GPSIFD.GPSLongitudeRef: "E" if lla[1] >= 0 else "W",
+                piexif.GPSIFD.GPSLongitude: deg_to_dms_rational(abs(lla[1])),
+                piexif.GPSIFD.GPSAltitudeRef: 0,
+                piexif.GPSIFD.GPSAltitude: (int(lla[2] * 100), 100),
+            }
+            exif_bytes = piexif.dump({"GPS": gps_ifd})
+            pil_img.save(filename, exif=exif_bytes, format="JPEG", quality=95)
+        else:
+            pil_img.save(filename, format="JPEG", quality=95)
 
     def is_complete(self, job):
         return all(v is not None for v in job["data"].values())
@@ -673,26 +660,36 @@ class SyncNode(Node):
 
     def post_process_and_save(self, data, stamp):
         """Apply per-band reflectance correction and save images + DB record."""
+        out = CaptureComplete()
+        out.header.stamp = stamp
+        cams = []
         try:
-            pose = data["pose"]
-            radalt = data["radalt"].altitude
+            # 1. extract data from job
             time_str = f"{stamp.sec}.{str(stamp.nanosec).rjust(9, '0')}"
             self.get_logger().info(f"Saving data frame at timestep {time_str}")
 
-            # Extract current spectrometer values for the irradiance ratio correction.
-            _spec_msg = data["spec"]
-            spec_np = np.asarray(
-                _spec_msg if isinstance(_spec_msg, np.ndarray) else _spec_msg.values,
-                dtype=np.float32,
-            )
-
-            # Convert images once
+            pose = data["pose"]  # ins_msg
+            radalt = data["radalt"].altitude  # scalar
+            spec_msg = data["spec"]  # as7265x_at_msgs.msg
             cam0_raw = self.br.imgmsg_to_cv2(
                 data["cam0"], desired_encoding="passthrough"
             )
             cam1_raw = self.br.imgmsg_to_cv2(
                 data["cam1"], desired_encoding="passthrough"
             )
+            spec_np = np.asarray(
+                spec_msg if isinstance(spec_msg, np.ndarray) else spec_msg.values,
+                dtype=np.float32,
+            )
+
+            # 2. post process into save/send target formats
+            tmp = (pose.ins_status) & self.INS_STATUS_GPS_NAV_FIX_MASK
+            RTK_STATUS = tmp >> self.INS_STATUS_GPS_NAV_FIX_OFFSET
+            tmp = (pose.ins_status) & self.INS_STATUS_SOLUTION_MASK
+            INS_STATUS = tmp >> self.INS_STATUS_SOLUTION_OFFSET
+
+            out.rtk_status = RTK_STATUS
+            out.ins_status = INS_STATUS
 
             if not self._require_calibration and self.panel_calib is None:
                 # Test / force_cal mode with no calibration data — skip correction.
@@ -717,13 +714,13 @@ class SyncNode(Node):
                     total.append(float(self.panel_calib[i]) * irr_ratio)
                 spec_for_correction = np.asarray(total, dtype=np.float32)
 
-            corrected_cam0 = process_cam0(cam0_raw, spec_for_correction)  # 4 × (H,W/4)
-            for _i, _band in enumerate(corrected_cam0):
+            multispec_cams = process_cam0(cam0_raw, spec_for_correction)  # 4 × (H,W/4)
+            for _i, _band in enumerate(multispec_cams):
                 for _issue in check_slice_health(_band):
                     self.get_logger().error(f"[IMG HEALTH] cam0[{_i}]: {_issue}")
 
-            cam1_rgb_list = process_cam1(cam1_raw)  # 4 × RGB    (H, W/4, 3)
-            for _i, _rgb in enumerate(cam1_rgb_list):
+            rgb_cams = process_cam1(cam1_raw)  # 4 × RGB    (H, W/4, 3)
+            for _i, _rgb in enumerate(rgb_cams):
                 for _issue in check_slice_health(_rgb):
                     self.get_logger().error(f"[IMG HEALTH] cam1[{_i}]: {_issue}")
 
@@ -731,54 +728,100 @@ class SyncNode(Node):
             # returns easting, northing, zone number, zone letter
             u = utm.from_latlon(pose.lla[0], pose.lla[1])
 
-            # 3. Save Images to File
-            paths = []
-            for i, img in enumerate(corrected_cam0):
-                filename = os.path.join(
-                    self.dir_name, f"multispec_{i}_{time_str}{self.img_format}"
-                )
-                paths.append(filename)
-                self.image_save(img, filename, pose)
+            out.utm_letter = u[-1]
+            out.utm_number = f'{u[-2]}'
 
-            for i, img in enumerate(cam1_rgb_list):
-                filename = os.path.join(
-                    self.dir_name, f"rgb_{i}_{time_str}{self.img_format}"
-                )
-                paths.append(filename)
-                self.image_save(img, filename, pose)
-
-            # 4. Save Data Frame to SQL
-            # Format: x, y, z, q, u, a, t, status, radalt, path, time...
-            paths_str = "|".join(paths)
-            vals = [
-                # UTM -> save x:easting, y:northing, z:WGS84 altitude
-                u[0],
-                u[1],
-                pose.lla[2],
-                # quat is scalar-first NED -> convert to scalar-last NED
+            t = [  # UTM -> x:easting, y:northing, z:WGS84 altitude
+                u[1],           # North
+                u[0],           # East
+                -pose.lla[2]    # Down
+            ]
+            quat = [  # quat is scalar-first NED -> convert to scalar-last NED
                 pose.qn2b[1],
                 pose.qn2b[2],
                 pose.qn2b[3],
-                pose.qn2b[0],
-                self.RTK_STATUS,
-                self.INS_STATUS,
-                float(radalt),
-                '"' + paths_str + '"',
-                time_str,
+                pose.qn2b[0]
             ]
-            head = "x, y, z, q, u, a, t, "
-            head += "rtk_status, ins_status, radalt, save_loc, pps_time"
-            val_str = ",".join(map(str, vals))
-            self._db_queue.put((head, val_str))
+
+            # 3. Save Images to File
+            fr = 0
+            for i, img in enumerate(multispec_cams):
+                cam_name = f'multispec_{i}'
+                cap, filename = self._pack_camera_capture(cam_name)
+
+                fr += 1
+                self.image_save(img, filename, pose)
+                cams.append(cap)
+
+            for i, img in enumerate(rgb_cams):
+                cam_name = f'rgb_{i}'
+                cap, filename = self._pack_camera_capture(cam_name)
+
+                fr += 1
+                self.image_save(img, filename, pose)
+                cams.append(cap)
 
             self.get_logger().info(
-                f"Cycle Complete: Saved {len(paths)} images at {time_str}"
+                f"Cycle Complete: Saved {fr} images at {time_str}"
             )
+
+            # 4. Send CaptureComplete manifest downstream
+            out.cameras = cams
+            self.capture_pub.publish(out)
 
         except Exception as ex:
             self.get_logger().error(
                 f"[THREAD] Failed to save: {ex}\n{traceback.format_exc()}"
             )
+
+    def _pack_camera_capture(self, cam_name):
+        filename = os.path.join(
+            self.dir_name, f"{cam_name}_{time_str}{self.img_format}"
+        )
+        cam = self.calib.get_camera_info(cam_name)
+
+        # pack CameraCapture
+        cap = CameraCapture()
+        cap.camera_name = cam_name
+        cap.image_path = filename
+
+        cap.height = cam["height"]
+        cap.width = cam["width"]
+
+        cap.fx = cam["K"][0,0]
+        cap.fy = cam["K"][1,1]
+        cap.cx = cam["K"][0,2]
+        cap.cy = cam["K"][1,2]
+
+        cap.k1 = cam["D"][0]
+        cap.k2 = cam["D"][1]
+        cap.p1 = cam["D"][2]
+        cap.p2 = cam["D"][3]
+        cap.k3 = cam["D"][4]
+
+        cap.T_ins_ned.position.x = t[0]
+        cap.T_ins_ned.position.y = t[1]
+        cap.T_ins_ned.position.z = t[2]
+
+        cap.T_ins_ned.orientation.x = quat[0]
+        cap.T_ins_ned.orientation.y = quat[1]
+        cap.T_ins_ned.orientation.z = quat[2]
+        cap.T_ins_ned.orientation.w = quat[3]
+
+        t_cam_ins = cam["T_cam_ins"][:3,3]
+        rot_cam_ins = cam["T_cam_ins"][:3,:3]
+        quat_cam_ins = R.from_matrix(rot_cam_ins).as_quat()
+
+        cap.T_cam_ins.position.x = t_cam_ins[0]
+        cap.T_cam_ins.position.y = t_cam_ins[1]
+        cap.T_cam_ins.position.z = t_cam_ins[2]
+
+        cap.T_cam_ins.orientation.x = quat_cam_ins[0]
+        cap.T_cam_ins.orientation.y = quat_cam_ins[1]
+        cap.T_cam_ins.orientation.z = quat_cam_ins[2]
+        cap.T_cam_ins.orientation.w = quat_cam_ins[3]
+
+        return cap, filename
 
     def _calibration_watchdog(self, timeout: float = 60.0, repeat: float = 30.0) -> None:
         """Log a loud error if calibration hasn't arrived after `timeout` seconds."""
@@ -811,30 +854,6 @@ class SyncNode(Node):
             if sq > 0 or dq > 0:
                 self.get_logger().info(f"Save queue depth: {sq}  DB queue depth: {dq}")
             time.sleep(2.0)
-
-    def _db_writer(self):
-        db_path = os.path.join(self.dir_name, self.db_name + ".db")
-        conn = sqlite3.connect(db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        cursor = conn.cursor()
-        while True:
-            item = self._db_queue.get()
-            if item is None:
-                self._db_queue.task_done()
-                break
-            head, val_str = item
-            try:
-                cursor.execute(
-                    f"INSERT OR IGNORE INTO {self.sensor_id}_images_{self.db_name}"
-                    f" ({head}) VALUES ({val_str});"
-                )
-                conn.commit()
-            except Exception as e:
-                self.get_logger().error(f"[DB] Write failed: {e}")
-            finally:
-                self._db_queue.task_done()
-        conn.close()
 
     def _cpu_temp_watchdog(self, warn_c=80.0, crit_c=90.0, interval=10.0):
         while rclpy.ok():
@@ -884,10 +903,6 @@ class SyncNode(Node):
             self.save_queue.put(None)
 
         self.save_queue.join()
-
-        # Drain the DB writer after all image workers have flushed their inserts.
-        self._db_queue.put(None)
-        self._db_queue.join()
 
         super().destroy_node()
 
