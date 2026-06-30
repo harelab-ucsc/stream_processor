@@ -799,8 +799,8 @@ class SyncNode(Node):
         t_cam_ins = cam["T_cam_ins"][:3, 3]
         rot_cam_ins = cam["T_cam_ins"][:3, :3]
 
-        t_cam_ins = cam["T_cam_ins"][:3,3]
-        rot_cam_ins = cam["T_cam_ins"][:3,:3]
+        t_cam_ins = cam["T_cam_ins"][:3, 3]
+        rot_cam_ins = cam["T_cam_ins"][:3, :3]
         quat_cam_ins = R.from_matrix(rot_cam_ins).as_quat()
 
         cap.cam_pose_ins.position.x = t_cam_ins[0]
