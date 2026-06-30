@@ -787,7 +787,8 @@ class SyncNode(Node):
         cap.p2 = cam["D"][3]
         cap.k3 = cam["D"][4]
 
-<<<<<<< HEAD
+
+<< << << < HEAD
         cap.T_ins_ned.position.x = t[0]
         cap.T_ins_ned.position.y = t[1]
         cap.T_ins_ned.position.z = t[2]
@@ -799,10 +800,10 @@ class SyncNode(Node):
 
         t_cam_ins = cam["T_cam_ins"][:3, 3]
         rot_cam_ins = cam["T_cam_ins"][:3, :3]
-=======
-        t_cam_ins = cam["T_cam_ins"][:3,3]
-        rot_cam_ins = cam["T_cam_ins"][:3,:3]
->>>>>>> 6a7676a (minor changes)
+== == == =
+        t_cam_ins = cam["T_cam_ins"][:3, 3]
+        rot_cam_ins = cam["T_cam_ins"][:3, :3]
+>>>>>> > 6a7676a(minor changes)
         quat_cam_ins = R.from_matrix(rot_cam_ins).as_quat()
 
         cap.cam_pose_ins.position.x = t_cam_ins[0]
