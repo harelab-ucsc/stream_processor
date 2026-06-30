@@ -242,12 +242,6 @@ class SyncNode(Node):
         )
         time.sleep(1)
 
-        self.declare_parameter("clicks_csv", "catch/data.csv")
-        # self.declare_parameter("clicks_csv", "catch/data__2025_01_10.csv")
-        self.clicks_csv = self.get_parameter("clicks_csv").value
-        self.clicks_csv = os.path.join(os.path.expanduser("~"), self.clicks_csv)
-        self.csv_read()
-
         # --- Camera framerate
         self.declare_parameter("framerate", 3.0)
         self.framerate = self.get_parameter("framerate").value
@@ -365,12 +359,6 @@ class SyncNode(Node):
             t.start()
             self._save_workers.append(t)
 
-        # Single serialised DB writer — eliminates concurrent sqlite3 write-lock
-        # races that produce "database is locked" errors.
-        self._db_queue = queue.Queue()
-        self._db_writer_thread = threading.Thread(target=self._db_writer, daemon=True)
-        self._db_writer_thread.start()
-
         threading.Thread(target=self._queue_watchdog, daemon=True).start()
         threading.Thread(target=self._cpu_temp_watchdog, daemon=True).start()
         threading.Thread(target=self._calibration_watchdog, daemon=True).start()
@@ -407,21 +395,6 @@ class SyncNode(Node):
             self.get_logger().info(
                 f"Error occurred while clearing {self.dir_name} files: {e}.\n"
             )
-
-    def csv_read(self):
-        self.get_logger().info(f"Reading clicks CSV: {self.clicks_csv}...")
-        data = []
-        with open(self.clicks_csv) as clicks:
-            reader = csv.reader(clicks)
-            for line in reader:
-                # returns easting, northing, zone number, zone letter
-                u = utm.from_latlon(float(line[0]), float(line[1]))
-                tag = int(line[-1][-1])
-                data.append(
-                    [u[0], u[1], u[2], u[3], float(line[2]), float(line[3]), tag]
-                )
-        self.dbc.insertClicks(f"clicks_{self.db_name}", data)
-        self.get_logger().info("...Done reading clicks CSV file.\n")
 
     # From micasense_spectrometer_bridge.py:
     # Cleaned it up a bit:
@@ -743,6 +716,15 @@ class SyncNode(Node):
                 pose.qn2b[0]
             ]
 
+            out.ins_pose_ned.position.x = t[0]
+            out.ins_pose_ned.position.y = t[1]
+            out.ins_pose_ned.position.z = t[2]
+
+            out.ins_pose_ned.orientation.x = quat[0]
+            out.ins_pose_ned.orientation.y = quat[1]
+            out.ins_pose_ned.orientation.z = quat[2]
+            out.ins_pose_ned.orientation.w = quat[3]
+
             # 3. Save Images to File
             fr = 0
             for i, img in enumerate(multispec_cams):
@@ -774,16 +756,22 @@ class SyncNode(Node):
                 f"[THREAD] Failed to save: {ex}\n{traceback.format_exc()}"
             )
 
-    def _pack_camera_capture(self, cam_name):
-        filename = os.path.join(
-            self.dir_name, f"{cam_name}_{time_str}{self.img_format}"
-        )
+    def _pack_camera_capture(
+        self,
+        cam_name,
+        cam_model='pinhole',
+        dist_model='radtan'
+    ):
+        filename = f"{cam_name}_{time_str}{self.img_format}"
+        filepath = os.path.join(self.dir_name, filename)
         cam = self.calib.get_camera_info(cam_name)
 
         # pack CameraCapture
         cap = CameraCapture()
         cap.camera_name = cam_name
-        cap.image_path = filename
+        cap.image_filename = filename
+        cap.camera_model = cam_model
+        cap.distortion_model = dist_model
 
         cap.height = cam["height"]
         cap.width = cam["width"]
@@ -799,6 +787,7 @@ class SyncNode(Node):
         cap.p2 = cam["D"][3]
         cap.k3 = cam["D"][4]
 
+<<<<<<< HEAD
         cap.T_ins_ned.position.x = t[0]
         cap.T_ins_ned.position.y = t[1]
         cap.T_ins_ned.position.z = t[2]
@@ -810,18 +799,22 @@ class SyncNode(Node):
 
         t_cam_ins = cam["T_cam_ins"][:3, 3]
         rot_cam_ins = cam["T_cam_ins"][:3, :3]
+=======
+        t_cam_ins = cam["T_cam_ins"][:3,3]
+        rot_cam_ins = cam["T_cam_ins"][:3,:3]
+>>>>>>> 6a7676a (minor changes)
         quat_cam_ins = R.from_matrix(rot_cam_ins).as_quat()
 
-        cap.T_cam_ins.position.x = t_cam_ins[0]
-        cap.T_cam_ins.position.y = t_cam_ins[1]
-        cap.T_cam_ins.position.z = t_cam_ins[2]
+        cap.cam_pose_ins.position.x = t_cam_ins[0]
+        cap.cam_pose_ins.position.y = t_cam_ins[1]
+        cap.cam_pose_ins.position.z = t_cam_ins[2]
 
-        cap.T_cam_ins.orientation.x = quat_cam_ins[0]
-        cap.T_cam_ins.orientation.y = quat_cam_ins[1]
-        cap.T_cam_ins.orientation.z = quat_cam_ins[2]
-        cap.T_cam_ins.orientation.w = quat_cam_ins[3]
+        cap.cam_pose_ins.orientation.x = quat_cam_ins[0]
+        cap.cam_pose_ins.orientation.y = quat_cam_ins[1]
+        cap.cam_pose_ins.orientation.z = quat_cam_ins[2]
+        cap.cam_pose_ins.orientation.w = quat_cam_ins[3]
 
-        return cap, filename
+        return cap, filepath
 
     def _calibration_watchdog(self, timeout: float = 60.0, repeat: float = 30.0) -> None:
         """Log a loud error if calibration hasn't arrived after `timeout` seconds."""
