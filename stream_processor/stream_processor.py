@@ -129,7 +129,7 @@ class RigCalibration:
 
         intr = cam["intrinsics"]
         dist = cam["distortion"]
-        res  = cam["resolution"]
+        res = cam["resolution"]
         T_cam_ins = cam["T_cam_ins"]
 
         K = np.array([
@@ -178,7 +178,7 @@ class SyncNode(Node):
         self.calib = RigCalibration(calibration_path)
         self.camera_models = {}
         for sensor in ["rgb", "multispec"]:
-            for ind in [1,2,3,4]:
+            for ind in [1, 2, 3, 4]:
 
                 cam_name = f"{sensor}_{ind}"
 
@@ -788,10 +788,10 @@ class SyncNode(Node):
         cap.height = cam["height"]
         cap.width = cam["width"]
 
-        cap.fx = cam["K"][0,0]
-        cap.fy = cam["K"][1,1]
-        cap.cx = cam["K"][0,2]
-        cap.cy = cam["K"][1,2]
+        cap.fx = cam["K"][0, 0]
+        cap.fy = cam["K"][1, 1]
+        cap.cx = cam["K"][0, 2]
+        cap.cy = cam["K"][1, 2]
 
         cap.k1 = cam["D"][0]
         cap.k2 = cam["D"][1]
@@ -808,8 +808,8 @@ class SyncNode(Node):
         cap.T_ins_ned.orientation.z = quat[2]
         cap.T_ins_ned.orientation.w = quat[3]
 
-        t_cam_ins = cam["T_cam_ins"][:3,3]
-        rot_cam_ins = cam["T_cam_ins"][:3,:3]
+        t_cam_ins = cam["T_cam_ins"][:3, 3]
+        rot_cam_ins = cam["T_cam_ins"][:3, :3]
         quat_cam_ins = R.from_matrix(rot_cam_ins).as_quat()
 
         cap.T_cam_ins.position.x = t_cam_ins[0]
