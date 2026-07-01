@@ -278,7 +278,7 @@ class SyncNode(Node):
             "radalt": 0.1,
         }
 
-        # Allow slight negative offset (INS may beat PPS)
+        # Allow slight negative offset
         self.pretrigger_tolerance = 0.01
 
         # --- Subscriptions ---
@@ -707,6 +707,8 @@ class SyncNode(Node):
 
             out.utm_letter = u[-1]
             out.utm_number = f'{u[-2]}'
+
+            out.rad_altitude = data["radalt"]
 
             t = [  # UTM -> x:easting, y:northing, z:WGS84 altitude
                 u[1],           # North
