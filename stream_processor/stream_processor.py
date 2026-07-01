@@ -434,7 +434,7 @@ class SyncNode(Node):
                 "cam1": None,
                 "pose": None,
                 "spec": None,
-                # "radalt": None,
+                "radalt": None,
             },
             "dt": {},  # diagnostics
         }
