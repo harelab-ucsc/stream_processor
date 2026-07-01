@@ -174,8 +174,8 @@ class SyncNode(Node):
 
         # load camera calibration
         self.declare_parameter("calibration_path", "")
-        self.dir_name = self.get_parameter("calibration_path").value
-        self.calib = RigCalibration(calibration_path)
+        self.calibration_path = self.get_parameter("calibration_path").value
+        self.calib = RigCalibration(self.calibration_path)
         self.camera_models = {}
         for sensor in ["rgb", "multispec"]:
             for ind in [1, 2, 3, 4]:
