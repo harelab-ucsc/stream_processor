@@ -845,8 +845,7 @@ class SyncNode(Node):
     def _queue_watchdog(self):
         while rclpy.ok():
             sq = self.save_queue.qsize()
-            dq = self._db_queue.qsize()
-            if sq > 0 or dq > 0:
+            if sq > 0:
                 self.get_logger().info(f"Save queue depth: {sq}  DB queue depth: {dq}")
             time.sleep(2.0)
 
