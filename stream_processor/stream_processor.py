@@ -175,7 +175,7 @@ class SyncNode(Node):
         # load camera calibration
         self.declare_parameter("calibration_path", "")
         self.calibration_path = os.path.join(
-            os.path.expanduser("~"), 
+            os.path.expanduser("~"),
             self.get_parameter("calibration_path").value
         )
         self.calib = RigCalibration(self.calibration_path)
