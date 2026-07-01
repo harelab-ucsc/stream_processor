@@ -48,6 +48,7 @@ from rasterio.transform import from_origin
 from .dbConnector import dbConnector
 from . import utilities
 from .spectral_correct import process_cam0, process_cam1, check_slice_health
+from birdseye_msgs.msg import CameraCapture, CaptureComplete
 
 # Tolerant imports — these message types live in repos that may not be
 # installed in test/CI containers (inertial_sense_ros2, custom_msgs).
