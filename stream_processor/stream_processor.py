@@ -388,11 +388,9 @@ class SyncNode(Node):
         self.process_jobs()
 
     def cam0_cb(self, msg):
-        self.get_logger().info("[DEBUG]    cam0 callback")
         self.assign_to_job("cam0", msg)
 
     def cam1_cb(self, msg):
-        self.get_logger().info("[DEBUG]    cam1 callback")
         self.assign_to_job("cam1", msg)
 
     def ins_cb(self, msg):
@@ -509,9 +507,9 @@ class SyncNode(Node):
 
             for job in self.active_jobs:
                 dt = ts - job["pps_time"]
-                self.get_logger().info(
-                    f"{key}: ts={ts:.6f}, pps={job['pps_time']:.6f}, dt={dt*1000:.1f}"
-                )
+                # self.get_logger().info(
+                #     f"{key}: ts={ts:.6f}, pps={job['pps_time']:.6f}, dt={dt*1000:.1f}"
+                # )
                 # Allow small pre-trigger (INS edge case)
                 if dt < -self.pretrigger_tolerance:
                     continue
@@ -552,16 +550,8 @@ class SyncNode(Node):
                 self.active_jobs.popleft()
 
                 if self.is_complete(job):
-                    if not self._calibration_ready():
-                        self.get_logger().warn(
-                            "Calibration not yet complete — discarding image cycle. "
-                            "Waiting for /panel_cal/irradiance (panel scan) "
-                            "and /panel_cal/spec_ref (auto_cal at 6 m AGL).",
-                            throttle_duration_sec=10.0,
-                        )
-                    else:
-                        self.log_sync_diagnostics(job)
-                        self.save_queue.put((job["data"], job["stamp_msg"]))
+                    self.log_sync_diagnostics(job)
+                    self.save_queue.put((job["data"], job["stamp_msg"]))
                 else:
                     self.get_logger().warn(
                         f"PPS frame drop @ {job['pps_time']:.3f} (incomplete)"
@@ -571,7 +561,6 @@ class SyncNode(Node):
                             self.get_logger().warn(f"    job['data'][{key}] is None")
 
     def post_process_and_save(self, data, stamp):
-        """Apply per-band reflectance correction and save images + DB record."""
         out = CaptureComplete()
         out.header.stamp = stamp
         cams = []
