@@ -93,11 +93,13 @@ pps_qos = QoSProfile(
     depth=1,
 )
 
-# BEST_EFFORT QoS for camera images — camera drivers publish with SensorDataQoS
-# (BEST_EFFORT). A RELIABLE subscription against a BEST_EFFORT publisher is a
-# DDS QoS incompatibility; no messages flow. For image data, BEST_EFFORT is
-# correct: a missed frame is recovered on the next PPS cycle.
-img_qos = qos_profile_sensor_data
+
+img_qos = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.VOLATILE,
+)
 
 # TRANSIENT_LOCAL (latched) QoS for the MicaCRPCal panel calibration topic.
 # depth=1 so late subscribers always receive the single retained message.
@@ -507,7 +509,9 @@ class SyncNode(Node):
 
             for job in self.active_jobs:
                 dt = ts - job["pps_time"]
-
+                self.get_logger().info(
+                    f"{key}: ts={ts:.6f}, pps={job['pps_time']:.6f}, dt={dt*1000:.1f}"
+                )
                 # Allow small pre-trigger (INS edge case)
                 if dt < -self.pretrigger_tolerance:
                     continue
