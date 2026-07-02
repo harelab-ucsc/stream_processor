@@ -387,9 +387,11 @@ class SyncNode(Node):
         self.process_jobs()
 
     def cam0_cb(self, msg):
+        self.get_logger().info("cam0 callback")
         self.assign_to_job("cam0", msg)
 
     def cam1_cb(self, msg):
+        self.get_logger().info("cam1 callback")
         self.assign_to_job("cam1", msg)
 
     def ins_cb(self, msg):
