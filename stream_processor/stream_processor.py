@@ -58,7 +58,7 @@ try:
 except ImportError:
     DIDINS2 = None
 try:
-    from custom_msgs.msg import AltSNR
+    from ros2_radalt_msgs.msg import AltSNR
 except ImportError:
     AltSNR = None
 try:
