@@ -220,28 +220,11 @@ class SyncNode(Node):
             810,
             860,  # ind 17: nearest to 850nm filter
         ]
-        self.current_raw_spec = None
-        self.panel_calib = None  # 4 per-band factors from MicaCRPCal
-        self.panel_spec_ref = None  # 18-band irradiance reference from AutoCalNode
-
-        self.declare_parameter("require_calibration", True)
-        self._require_calibration: bool = self.get_parameter(
-            "require_calibration"
-        ).value
 
         db_path = os.path.join(
             os.path.expanduser("~"), self.get_parameter("dir_name").value
         )
         os.makedirs(db_path, exist_ok=True)
-        self.dbc = dbConnector(
-            os.path.join(db_path, self.get_parameter("db_name").value)
-        )
-        self.dbc.boot(self.get_parameter("db_name").value, self.sensor_id)
-        os.chmod(
-            os.path.join(self.dir_name, self.db_name + ".db"),
-            stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO,
-        )
-        time.sleep(1)
 
         # --- Camera framerate
         self.declare_parameter("framerate", 3.0)
@@ -322,34 +305,10 @@ class SyncNode(Node):
                 "as7265x_at_msgs not available — spectrometer SUB disabled"
             )
 
-        # 5. MicaCRPCal panel calibration factors (latched).
-        self.create_subscription(
-            Float32MultiArray,
-            "/panel_cal/irradiance",
-            self._panel_cal_cb,
-            qos_profile=panel_cal_qos,
-        )
-        # AutoCalNode irradiance reference — 18-band spectrometer snapshot taken
-        # once the drone clears 6 m AGL (above any shadow that may have been on
-        # the calibration panel). Used to compute the per-cycle irradiance ratio.
-        self.create_subscription(
-            Float32MultiArray,
-            "/panel_cal/spec_ref",
-            self._panel_spec_ref_cb,
-            qos_profile=panel_cal_qos,
-        )
-
         self.capture_pub = self.create_publisher(
             CaptureComplete,
             "/sync/capture_complete",
             10,
-        )
-
-        self.get_logger().info("Sync Node Started. Waiting for PPS Trigger.")
-
-        # --- Services ---
-        self.capture_panel_srv = self.create_service(
-            Trigger, "spectrometer/capture_panel", self.capture_panel_callback
         )
 
         # --- Producer/consumer save queue ---
@@ -362,7 +321,8 @@ class SyncNode(Node):
 
         threading.Thread(target=self._queue_watchdog, daemon=True).start()
         threading.Thread(target=self._cpu_temp_watchdog, daemon=True).start()
-        threading.Thread(target=self._calibration_watchdog, daemon=True).start()
+
+        self.get_logger().info("Sync Node Started. Waiting for PPS Trigger.")
 
     def dirCheck(self):
         if not os.path.isdir(self.dir_name):
@@ -396,22 +356,6 @@ class SyncNode(Node):
             self.get_logger().info(
                 f"Error occurred while clearing {self.dir_name} files: {e}.\n"
             )
-
-    # From micasense_spectrometer_bridge.py:
-    # Cleaned it up a bit:
-    # Add a persistent current_raw_spec buffer so capture_panel_callback
-    # can always save the latest
-    # spectrometer reading for panel calibration instead of relying on
-    # PPS-cycle state that may already have been cleared.
-    def capture_panel_callback(self, request, response):
-        """Reject the request; use MicaCRPCal panel_scan for panel calibration."""
-        response.success = False
-        response.message = (
-            "This service is deprecated. Run the MicaCRPCal panel_scan node before "
-            "flight and hold the CRP panel under cam0 with the QR tag visible."
-        )
-        self.get_logger().warn(response.message)
-        return response
 
     def get_msg_time(self, msg):
         try:
@@ -462,12 +406,6 @@ class SyncNode(Node):
     def spec_cb(self, msg):
         self.current_raw_spec = list(msg.values)
         self.assign_to_job("spec", msg)
-
-    def _panel_cal_cb(self, msg: Float32MultiArray) -> None:
-        self.panel_calib = list(msg.data)
-        self.get_logger().info(
-            f"Panel calibration received: {len(self.panel_calib)} band factors"
-        )
 
     def _panel_spec_ref_cb(self, msg: Float32MultiArray) -> None:
         self.panel_spec_ref = list(msg.data)
@@ -551,11 +489,6 @@ class SyncNode(Node):
 
     def is_complete(self, job):
         return all(v is not None for v in job["data"].values())
-
-    def _calibration_ready(self) -> bool:
-        if not self._require_calibration:
-            return True
-        return self.panel_calib is not None and self.panel_spec_ref is not None
 
     def log_sync_diagnostics(self, job):
         dt_info = job["dt"]
@@ -643,17 +576,11 @@ class SyncNode(Node):
             self.get_logger().info(f"Saving data frame at timestep {time_str}")
 
             pose = data["pose"]  # ins_msg
-            radalt = data["radalt"].altitude  # scalar
-            spec_msg = data["spec"]  # as7265x_at_msgs.msg
             cam0_raw = self.br.imgmsg_to_cv2(
                 data["cam0"], desired_encoding="passthrough"
             )
             cam1_raw = self.br.imgmsg_to_cv2(
                 data["cam1"], desired_encoding="passthrough"
-            )
-            spec_np = np.asarray(
-                spec_msg if isinstance(spec_msg, np.ndarray) else spec_msg.values,
-                dtype=np.float32,
             )
 
             # 2. post process into save/send target formats
@@ -665,30 +592,7 @@ class SyncNode(Node):
             out.rtk_status = RTK_STATUS
             out.ins_status = INS_STATUS
 
-            if not self._require_calibration and self.panel_calib is None:
-                # Test / force_cal mode with no calibration data — skip correction.
-                spec_for_correction = None
-            elif not self._calibration_ready():
-                # Should not reach here — process_jobs() gates on _calibration_ready().
-                raise RuntimeError(
-                    "post_process_and_save called before calibration is ready"
-                )
-            elif self.panel_spec_ref is None:
-                # panel_calib present but no irradiance reference yet (shouldn't
-                # happen in normal flight; panel_spec_ref arrives with auto_cal).
-                spec_for_correction = np.asarray(self.panel_calib, dtype=np.float32)
-            else:
-                # total_factor[i] = panel_factor[i] * (spec_ref[k] / spec_current[k])
-                # Corrects for irradiance changes relative to the reference captured
-                # when the drone first cleared 6 m AGL.
-                total = []
-                for i, k in enumerate(_CAM0_SPEC_IDX):
-                    cur = float(spec_np[k])
-                    irr_ratio = (
-                        float(self.panel_spec_ref[k]) / cur if cur > 0.0 else 1.0
-                    )
-                    total.append(float(self.panel_calib[i]) * irr_ratio)
-                spec_for_correction = np.asarray(total, dtype=np.float32)
+            spec_for_correction = None
 
             multispec_cams = process_cam0(cam0_raw, spec_for_correction)  # 4 × (H,W/4)
             for _i, _band in enumerate(multispec_cams):
@@ -708,6 +612,8 @@ class SyncNode(Node):
             out.utm_number = f"{u[-2]}"
 
             out.rad_altitude = data["radalt"]
+
+            out.spec_cal = data["spec"]
 
             t = [  # UTM -> x:easting, y:northing, z:WGS84 altitude
                 u[1],  # North
@@ -811,32 +717,6 @@ class SyncNode(Node):
         cap.cam_pose_ins.orientation.w = quat_cam_ins[3]
 
         return cap, filepath
-
-    def _calibration_watchdog(
-        self, timeout: float = 60.0, repeat: float = 30.0
-    ) -> None:
-        """Log a loud error if calibration hasn't arrived after `timeout` seconds."""
-        time.sleep(timeout)
-        if self._calibration_ready():
-            return
-        sep = "=" * 62
-        while not self._calibration_ready():
-            missing = []
-            if self.panel_calib is None:
-                missing.append("/panel_cal/irradiance (panel_scan node)")
-            if self.panel_spec_ref is None:
-                missing.append("/panel_cal/spec_ref  (auto_cal node)")
-            self.get_logger().error(
-                f"\n{sep}\n"
-                f"  CALIBRATION NOT RECEIVED after {timeout:.0f} s\n"
-                f"  Still waiting for:\n"
-                + "".join(f"    - {m}\n" for m in missing)
-                + f"  Images are being DISCARDED until calibration arrives.\n"
-                f"  Check that mica_crp_cal is built and auto_cal/panel_scan\n"
-                f"  nodes are running (`ros2 node list | grep cal`).\n"
-                f"{sep}"
-            )
-            time.sleep(repeat)
 
     def _queue_watchdog(self):
         while rclpy.ok():
