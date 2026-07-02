@@ -48,6 +48,7 @@ def _row_count(path):
 # Minimal replica of the _db_writer pattern from stream_processor.py
 # ---------------------------------------------------------------------------
 
+
 class SingleWriterDB:
     """Queue-backed SQLite writer — one connection, one thread, WAL mode."""
 
@@ -98,6 +99,7 @@ class SingleWriterDB:
 # ---------------------------------------------------------------------------
 # 1. Old pattern — concurrent connections race on the write lock
 # ---------------------------------------------------------------------------
+
 
 def test_old_pattern_produces_lock_errors():
     """
@@ -160,6 +162,7 @@ def test_old_pattern_produces_lock_errors():
 # 2. New pattern — zero errors, all rows present
 # ---------------------------------------------------------------------------
 
+
 def test_new_pattern_no_lock_errors():
     """Single writer thread: zero database-is-locked errors under N producers."""
     N = 24
@@ -182,14 +185,13 @@ def test_new_pattern_no_lock_errors():
         db.shutdown()
 
         assert db.errors == [], f"Unexpected DB errors: {db.errors}"
-        assert _row_count(db_path) == N, (
-            f"Expected {N} rows, got {_row_count(db_path)}"
-        )
+        assert _row_count(db_path) == N, f"Expected {N} rows, got {_row_count(db_path)}"
 
 
 # ---------------------------------------------------------------------------
 # 3. Heavy contention — every row from 50 producers must land in the DB
 # ---------------------------------------------------------------------------
+
 
 def test_all_rows_written_under_heavy_contention():
     """50 simultaneous producers — no row may be silently dropped."""
@@ -222,6 +224,7 @@ def test_all_rows_written_under_heavy_contention():
 # 4. Shutdown drains all pending items before the writer exits
 # ---------------------------------------------------------------------------
 
+
 def test_shutdown_drains_pending_items():
     """Items queued just before the shutdown sentinel must all be written."""
     N = 30
@@ -242,6 +245,7 @@ def test_shutdown_drains_pending_items():
 # ---------------------------------------------------------------------------
 # 5. Queue depth reflects real backlog when writer is slower than producers
 # ---------------------------------------------------------------------------
+
 
 def test_queue_depth_reflects_backlog():
     """Queue depth must reach > 1 when producers outpace the writer."""

@@ -120,7 +120,6 @@ def deg_to_dms_rational(deg_float):
 
 
 class RigCalibration:
-
     def __init__(self, yaml_path):
         with open(yaml_path, "r") as f:
             self.data = yaml.safe_load(f)
@@ -133,26 +132,26 @@ class RigCalibration:
         res = cam["resolution"]
         T_cam_ins = cam["T_cam_ins"]
 
-        K = np.array([
-            [intr["fx"], 0.0, intr["cx"]],
-            [0.0, intr["fy"], intr["cy"]],
-            [0.0, 0.0, 1.0]
-        ], dtype=np.float64)
+        K = np.array(
+            [
+                [intr["fx"], 0.0, intr["cx"]],
+                [0.0, intr["fy"], intr["cy"]],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
 
-        D = np.array([
-            dist["k1"],
-            dist["k2"],
-            dist["p1"],
-            dist["p2"],
-            dist.get("k3", 0.0)
-        ], dtype=np.float64)
+        D = np.array(
+            [dist["k1"], dist["k2"], dist["p1"], dist["p2"], dist.get("k3", 0.0)],
+            dtype=np.float64,
+        )
 
         return {
             "K": K,
             "D": D,
             "T_cam_ins": T_cam_ins,
             "width": res["width"],
-            "height": res["height"]
+            "height": res["height"],
         }
 
 
@@ -176,14 +175,12 @@ class SyncNode(Node):
         # load camera calibration
         self.declare_parameter("calibration_path", "")
         self.calibration_path = os.path.join(
-            os.path.expanduser("~"),
-            self.get_parameter("calibration_path").value
+            os.path.expanduser("~"), self.get_parameter("calibration_path").value
         )
         self.calib = RigCalibration(self.calibration_path)
         self.camera_models = {}
         for sensor in ["rgb", "multispec"]:
             for ind in [1, 2, 3, 4]:
-
                 cam_name = f"{sensor}_{ind}"
 
                 cam = self.calib.get_camera_info(cam_name)
@@ -194,7 +191,7 @@ class SyncNode(Node):
                     None,
                     cam["K"],
                     (cam["width"], cam["height"]),
-                    cv2.CV_32FC1
+                    cv2.CV_32FC1,
                 )
 
                 self.camera_models[cam_name] = {
@@ -224,13 +221,13 @@ class SyncNode(Node):
             860,  # ind 17: nearest to 850nm filter
         ]
         self.current_raw_spec = None
-        self.panel_calib = None      # 4 per-band factors from MicaCRPCal
-        self.panel_spec_ref = None   # 18-band irradiance reference from AutoCalNode
+        self.panel_calib = None  # 4 per-band factors from MicaCRPCal
+        self.panel_spec_ref = None  # 18-band irradiance reference from AutoCalNode
 
         self.declare_parameter("require_calibration", True)
-        self._require_calibration: bool = (
-            self.get_parameter("require_calibration").value
-        )
+        self._require_calibration: bool = self.get_parameter(
+            "require_calibration"
+        ).value
 
         db_path = os.path.join(
             os.path.expanduser("~"), self.get_parameter("dir_name").value
@@ -687,7 +684,9 @@ class SyncNode(Node):
                 total = []
                 for i, k in enumerate(_CAM0_SPEC_IDX):
                     cur = float(spec_np[k])
-                    irr_ratio = float(self.panel_spec_ref[k]) / cur if cur > 0.0 else 1.0
+                    irr_ratio = (
+                        float(self.panel_spec_ref[k]) / cur if cur > 0.0 else 1.0
+                    )
                     total.append(float(self.panel_calib[i]) * irr_ratio)
                 spec_for_correction = np.asarray(total, dtype=np.float32)
 
@@ -706,20 +705,20 @@ class SyncNode(Node):
             u = utm.from_latlon(pose.lla[0], pose.lla[1])
 
             out.utm_letter = u[-1]
-            out.utm_number = f'{u[-2]}'
+            out.utm_number = f"{u[-2]}"
 
             out.rad_altitude = data["radalt"]
 
             t = [  # UTM -> x:easting, y:northing, z:WGS84 altitude
-                u[1],           # North
-                u[0],           # East
-                -pose.lla[2]    # Down
+                u[1],  # North
+                u[0],  # East
+                -pose.lla[2],  # Down
             ]
             quat = [  # quat is scalar-first NED -> convert to scalar-last NED
                 pose.qn2b[1],
                 pose.qn2b[2],
                 pose.qn2b[3],
-                pose.qn2b[0]
+                pose.qn2b[0],
             ]
 
             out.ins_pose_ned.position.x = t[0]
@@ -734,7 +733,7 @@ class SyncNode(Node):
             # 3. Save Images to File
             fr = 0
             for i, img in enumerate(multispec_cams):
-                cam_name = f'multispec_{i}'
+                cam_name = f"multispec_{i}"
                 cap, filename = self._pack_camera_capture(cam_name)
 
                 fr += 1
@@ -742,16 +741,14 @@ class SyncNode(Node):
                 cams.append(cap)
 
             for i, img in enumerate(rgb_cams):
-                cam_name = f'rgb_{i}'
+                cam_name = f"rgb_{i}"
                 cap, filename = self._pack_camera_capture(cam_name)
 
                 fr += 1
                 self.image_save(img, filename, pose)
                 cams.append(cap)
 
-            self.get_logger().info(
-                f"Cycle Complete: Saved {fr} images at {time_str}"
-            )
+            self.get_logger().info(f"Cycle Complete: Saved {fr} images at {time_str}")
 
             # 4. Send CaptureComplete manifest downstream
             out.cameras = cams
@@ -762,12 +759,7 @@ class SyncNode(Node):
                 f"[THREAD] Failed to save: {ex}\n{traceback.format_exc()}"
             )
 
-    def _pack_camera_capture(
-        self,
-        cam_name,
-        cam_model='pinhole',
-        dist_model='radtan'
-    ):
+    def _pack_camera_capture(self, cam_name, cam_model="pinhole", dist_model="radtan"):
         filename = f"{cam_name}_{time_str}{self.img_format}"
         filepath = os.path.join(self.dir_name, filename)
         cam = self.calib.get_camera_info(cam_name)
@@ -820,7 +812,9 @@ class SyncNode(Node):
 
         return cap, filepath
 
-    def _calibration_watchdog(self, timeout: float = 60.0, repeat: float = 30.0) -> None:
+    def _calibration_watchdog(
+        self, timeout: float = 60.0, repeat: float = 30.0
+    ) -> None:
         """Log a loud error if calibration hasn't arrived after `timeout` seconds."""
         time.sleep(timeout)
         if self._calibration_ready():

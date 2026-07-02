@@ -16,7 +16,9 @@ class dbConnector:
         # sqlite3.register_adapter(np.ndarray, self.adapt_array)
         # Converts TEXT to np.array when selecting
         # sqlite3.register_converter("array", self.convert_array)
-        self.db_c = sqlite3.connect(f"{db_name}.db", detect_types=sqlite3.PARSE_DECLTYPES)
+        self.db_c = sqlite3.connect(
+            f"{db_name}.db", detect_types=sqlite3.PARSE_DECLTYPES
+        )
         self.db_c.create_function("sqrt", 1, math.sqrt)
         self.db_c.create_function("pow", 2, self.sqlite_power)
 
@@ -105,8 +107,7 @@ class dbConnector:
 
     def insertIgnoreInto(self, table_name, cols, vals):
         cur = self.db_c.cursor()
-        cur.execute(
-            f"INSERT OR IGNORE INTO {table_name}({cols}) VALUES({vals})")
+        cur.execute(f"INSERT OR IGNORE INTO {table_name}({cols}) VALUES({vals})")
         self.db_c.commit()
 
     def insertClicks(self, table_name, vals):
@@ -139,5 +140,7 @@ class dbConnector:
         num_columns = len(cols.split(","))
         # Build the SQL statement to insert rows
         placeholders = ",".join(["?" for _ in range(num_columns)])
-        cur.executemany(f"INSERT INTO {table_name}({cols}) VALUES({placeholders})", vals)
+        cur.executemany(
+            f"INSERT INTO {table_name}({cols}) VALUES({placeholders})", vals
+        )
         self.db_c.commit()

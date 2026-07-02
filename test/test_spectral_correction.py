@@ -18,6 +18,7 @@ from stream_processor.stream_processor import _CAM0_SPEC_IDX
 # math without spinning up a ROS executor.
 # ---------------------------------------------------------------------------
 
+
 def _apply_correction(panel_calib, panel_spec_ref, spec_np):
     """
     Compute spec_for_correction exactly as post_process_and_save does.
@@ -44,8 +45,8 @@ def _apply_correction(panel_calib, panel_spec_ref, spec_np):
 # _CAM0_SPEC_IDX mapping
 # ---------------------------------------------------------------------------
 
-class TestSpecBandMapping:
 
+class TestSpecBandMapping:
     def test_four_indices(self):
         assert len(_CAM0_SPEC_IDX) == 4
 
@@ -71,8 +72,8 @@ class TestSpecBandMapping:
 # Irradiance ratio correction formula
 # ---------------------------------------------------------------------------
 
-class TestIrradianceCorrectionFormula:
 
+class TestIrradianceCorrectionFormula:
     def _make_spec(self, values_at_indices, n=18):
         """Build an 18-band spectrometer array with given values at specific indices."""
         spec = np.ones(n, dtype=np.float32) * 1000.0
@@ -111,7 +112,7 @@ class TestIrradianceCorrectionFormula:
         """Double each factor when in-flight irradiance is half the reference."""
         panel_calib = [1.0, 1.0, 1.0, 1.0]
         spec_ref = np.full(18, 1000.0, dtype=np.float32)
-        spec_cur = np.full(18, 500.0, dtype=np.float32)   # 0.5× reference
+        spec_cur = np.full(18, 500.0, dtype=np.float32)  # 0.5× reference
         result = _apply_correction(panel_calib, spec_ref, spec_cur)
         for f in result:
             assert f == pytest.approx(2.0, rel=1e-5)
@@ -128,8 +129,8 @@ class TestIrradianceCorrectionFormula:
 
         result = _apply_correction(panel_calib, spec_ref, spec_cur)
 
-        assert result[0] == pytest.approx(1.0, rel=1e-5)   # ratio=1, unchanged
-        assert result[1] == pytest.approx(0.5, rel=1e-5)   # ratio=0.5, halved
+        assert result[0] == pytest.approx(1.0, rel=1e-5)  # ratio=1, unchanged
+        assert result[1] == pytest.approx(0.5, rel=1e-5)  # ratio=0.5, halved
         assert result[2] == pytest.approx(1.0, rel=1e-5)
         assert result[3] == pytest.approx(1.0, rel=1e-5)
 
@@ -146,7 +147,7 @@ class TestIrradianceCorrectionFormula:
         """Only the zero-spec bands fall back to ratio=1; others correct normally."""
         panel_calib = [1.0, 1.0, 1.0, 1.0]
         spec_ref = np.full(18, 1000.0, dtype=np.float32)
-        spec_cur = np.full(18, 500.0, dtype=np.float32)   # 2× correction expected
+        spec_cur = np.full(18, 500.0, dtype=np.float32)  # 2× correction expected
 
         # Zero out the spec index for slice 2
         k2 = _CAM0_SPEC_IDX[2]
@@ -154,9 +155,9 @@ class TestIrradianceCorrectionFormula:
 
         result = _apply_correction(panel_calib, spec_ref, spec_cur)
 
-        assert result[0] == pytest.approx(2.0, rel=1e-5)   # 1000/500 = 2×
+        assert result[0] == pytest.approx(2.0, rel=1e-5)  # 1000/500 = 2×
         assert result[1] == pytest.approx(2.0, rel=1e-5)
-        assert result[2] == pytest.approx(1.0, rel=1e-5)   # fallback ratio=1
+        assert result[2] == pytest.approx(1.0, rel=1e-5)  # fallback ratio=1
         assert result[3] == pytest.approx(2.0, rel=1e-5)
 
     def test_output_dtype_is_float32(self):
@@ -184,8 +185,8 @@ class TestIrradianceCorrectionFormula:
 # Panel calibration callback behaviour (replicated from stream_processor)
 # ---------------------------------------------------------------------------
 
-class TestPanelCalibCallbacks:
 
+class TestPanelCalibCallbacks:
     def test_panel_cal_cb_stores_list(self):
         """_panel_cal_cb stores msg.data as a Python list."""
         # Replicate the callback
