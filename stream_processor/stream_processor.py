@@ -19,9 +19,8 @@ import glob2
 import piexif
 import queue
 import sqlite3
-# import copy
-
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 
 import rclpy
 from rclpy.node import Node
@@ -387,11 +386,11 @@ class SyncNode(Node):
         self.process_jobs()
 
     def cam0_cb(self, msg):
-        self.get_logger().info("cam0 callback")
+        self.get_logger().info("[DEBUG]    cam0 callback")
         self.assign_to_job("cam0", msg)
 
     def cam1_cb(self, msg):
-        self.get_logger().info("cam1 callback")
+        self.get_logger().info("[DEBUG]    cam1 callback")
         self.assign_to_job("cam1", msg)
 
     def ins_cb(self, msg):
@@ -642,7 +641,7 @@ class SyncNode(Node):
             fr = 0
             for i, img in enumerate(multispec_cams):
                 cam_name = f"multispec_{i}"
-                cap, filename = self._pack_camera_capture(cam_name)
+                cap, filename = self._pack_camera_capture(cam_name, time_str)
 
                 fr += 1
                 self.image_save(img, filename, pose)
@@ -650,7 +649,7 @@ class SyncNode(Node):
 
             for i, img in enumerate(rgb_cams):
                 cam_name = f"rgb_{i}"
-                cap, filename = self._pack_camera_capture(cam_name)
+                cap, filename = self._pack_camera_capture(cam_name, time_str)
 
                 fr += 1
                 self.image_save(img, filename, pose)
@@ -667,7 +666,7 @@ class SyncNode(Node):
                 f"[THREAD] Failed to save: {ex}\n{traceback.format_exc()}"
             )
 
-    def _pack_camera_capture(self, cam_name, cam_model="pinhole", dist_model="radtan"):
+    def _pack_camera_capture(self, cam_name, time_str, cam_model="pinhole", dist_model="radtan"):
         filename = f"{cam_name}_{time_str}{self.img_format}"
         filepath = os.path.join(self.dir_name, filename)
         cam = self.calib.get_camera_info(cam_name)
@@ -693,15 +692,6 @@ class SyncNode(Node):
         cap.p2 = cam["D"][3]
         cap.k3 = cam["D"][4]
 
-        cap.T_ins_ned.position.x = t[0]
-        cap.T_ins_ned.position.y = t[1]
-        cap.T_ins_ned.position.z = t[2]
-
-        cap.T_ins_ned.orientation.x = quat[0]
-        cap.T_ins_ned.orientation.y = quat[1]
-        cap.T_ins_ned.orientation.z = quat[2]
-        cap.T_ins_ned.orientation.w = quat[3]
-
         t_cam_ins = cam["T_cam_ins"][:3, 3]
         rot_cam_ins = cam["T_cam_ins"][:3, :3]
 
@@ -724,7 +714,7 @@ class SyncNode(Node):
         while rclpy.ok():
             sq = self.save_queue.qsize()
             if sq > 0:
-                self.get_logger().info(f"Save queue depth: {sq}  DB queue depth: {dq}")
+                self.get_logger().info(f"Save queue depth: {sq}")
             time.sleep(2.0)
 
     def _cpu_temp_watchdog(self, warn_c=80.0, crit_c=90.0, interval=10.0):
