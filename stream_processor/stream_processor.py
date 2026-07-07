@@ -173,6 +173,9 @@ class SyncNode(Node):
         self.dir_name = os.path.join(os.path.expanduser("~"), self.dir_name)
         self.dirCheck()
 
+        self.declare_parameter("clicks_csv", "")
+        self.clicks_csv = self.get_parameter("clicks_csv").value
+
         # load camera calibration
         self.declare_parameter("calibration_path", "")
         self.calibration_path = os.path.join(
@@ -621,19 +624,19 @@ class SyncNode(Node):
                 pose.qn2b[0],
             ]
 
-            out.ins_pose_ned.position.x = t[0]
-            out.ins_pose_ned.position.y = t[1]
-            out.ins_pose_ned.position.z = t[2]
+            out.ins_pose_ned.position.x = float(t[0])
+            out.ins_pose_ned.position.y = float(t[1])
+            out.ins_pose_ned.position.z = float(t[2])
 
-            out.ins_pose_ned.orientation.x = quat[0]
-            out.ins_pose_ned.orientation.y = quat[1]
-            out.ins_pose_ned.orientation.z = quat[2]
-            out.ins_pose_ned.orientation.w = quat[3]
+            out.ins_pose_ned.orientation.x = float(quat[0])
+            out.ins_pose_ned.orientation.y = float(quat[1])
+            out.ins_pose_ned.orientation.z = float(quat[2])
+            out.ins_pose_ned.orientation.w = float(quat[3])
 
             # 3. Save Images to File
             fr = 0
             for i, img in enumerate(multispec_cams):
-                cam_name = f"multispec_{i}"
+                cam_name = f"multispec_{i+1}"
                 cap, filename = self._pack_camera_capture(cam_name, time_str)
 
                 fr += 1
@@ -641,7 +644,7 @@ class SyncNode(Node):
                 cams.append(cap)
 
             for i, img in enumerate(rgb_cams):
-                cam_name = f"rgb_{i}"
+                cam_name = f"rgb_{i+1}"
                 cap, filename = self._pack_camera_capture(cam_name, time_str)
 
                 fr += 1
@@ -685,21 +688,21 @@ class SyncNode(Node):
         cap.p2 = cam["D"][3]
         cap.k3 = cam["D"][4]
 
-        t_cam_ins = cam["T_cam_ins"][:3, 3]
-        rot_cam_ins = cam["T_cam_ins"][:3, :3]
+        T_cam_ins = np.array(cam["T_cam_ins"])
 
-        t_cam_ins = cam["T_cam_ins"][:3, 3]
-        rot_cam_ins = cam["T_cam_ins"][:3, :3]
+        t_cam_ins = T_cam_ins[:3, 3]
+        rot_cam_ins = T_cam_ins[:3, :3]
+
         quat_cam_ins = R.from_matrix(rot_cam_ins).as_quat()
 
-        cap.cam_pose_ins.position.x = t_cam_ins[0]
-        cap.cam_pose_ins.position.y = t_cam_ins[1]
-        cap.cam_pose_ins.position.z = t_cam_ins[2]
+        cap.cam_pose_ins.position.x = float(t_cam_ins[0])
+        cap.cam_pose_ins.position.y = float(t_cam_ins[1])
+        cap.cam_pose_ins.position.z = float(t_cam_ins[2])
 
-        cap.cam_pose_ins.orientation.x = quat_cam_ins[0]
-        cap.cam_pose_ins.orientation.y = quat_cam_ins[1]
-        cap.cam_pose_ins.orientation.z = quat_cam_ins[2]
-        cap.cam_pose_ins.orientation.w = quat_cam_ins[3]
+        cap.cam_pose_ins.orientation.x = float(quat_cam_ins[0])
+        cap.cam_pose_ins.orientation.y = float(quat_cam_ins[1])
+        cap.cam_pose_ins.orientation.z = float(quat_cam_ins[2])
+        cap.cam_pose_ins.orientation.w = float(quat_cam_ins[3])
 
         return cap, filepath
 
