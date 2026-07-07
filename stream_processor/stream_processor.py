@@ -431,7 +431,7 @@ class SyncNode(Node):
             self._save_geotiff(img, filename, pose)
         elif self.img_format == ".png":
             cv2.imwrite(filename, img)
-        elif self.img_format == ".jpg":
+        elif self.img_format in (".jpeg", ".jpg"):
             self._save_geojpeg(img, filename, pose)
 
     def _save_geotiff(self, img, filename, pose):
