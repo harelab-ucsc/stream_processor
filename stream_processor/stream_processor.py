@@ -162,19 +162,13 @@ class SyncNode(Node):
         self.br = CvBridge()
 
         # --- Parameters and Setup ---
-        self.declare_parameter("db_name", "flight_data")
-        self.db_name = self.get_parameter("db_name").value
         self.declare_parameter("img_format", ".png")
         self.img_format = self.get_parameter("img_format").value
-        self.sensor_id = "frc_payload"
 
         self.declare_parameter("dir_name", "parsed_flight")
         self.dir_name = self.get_parameter("dir_name").value
         self.dir_name = os.path.join(os.path.expanduser("~"), self.dir_name)
         self.dirCheck()
-
-        self.declare_parameter("clicks_csv", "")
-        self.clicks_csv = self.get_parameter("clicks_csv").value
 
         # load camera calibration
         self.declare_parameter("calibration_path", "")
