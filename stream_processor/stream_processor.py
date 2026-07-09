@@ -645,7 +645,8 @@ class SyncNode(Node):
                 self.image_save(img, filename, pose)
                 cams.append(cap)
 
-            self.get_logger().info(f"Cycle Complete: Saved {fr} images as {self.img_format} at {time_str}")
+            self.get_logger().info(
+                f"Cycle Complete: Saved {fr} images as {self.img_format} at {time_str}")
 
             # 4. Send CaptureComplete manifest downstream
             out.cameras = cams
