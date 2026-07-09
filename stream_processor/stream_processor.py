@@ -252,8 +252,8 @@ class SyncNode(Node):
             "cam0": 0.95 / self.framerate,
             "cam1": 0.95 / self.framerate,
             "pose": 0.95 / self.framerate,
-            "spec": 0.2,
-            "radalt": 0.1,
+            "spec": 0.95 / self.framerate,
+            "radalt": 0.95 / self.framerate,
         }
 
         # Allow slight negative offset
