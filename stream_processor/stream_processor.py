@@ -417,8 +417,6 @@ class SyncNode(Node):
 
     # --- 3. Processing and Saving ---
     def image_save(self, img, filename, pose):
-        # Convert from cv2 default BGR to correct RGB ordering
-        inp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         # Normalise float32 reflectance → uint16 for all formats.
         if img.dtype == np.float32:
@@ -645,7 +643,8 @@ class SyncNode(Node):
                 cap, filename = self._pack_camera_capture(cam_name, time_str)
 
                 fr += 1
-                self.image_save(img, filename, pose)
+                inp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                self.image_save(inp, filename, pose)
                 cams.append(cap)
 
             self.get_logger().info(
