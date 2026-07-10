@@ -417,6 +417,9 @@ class SyncNode(Node):
 
     # --- 3. Processing and Saving ---
     def image_save(self, img, filename, pose):
+        # Convert from cv2 default BGR to correct RGB ordering
+        inp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
         # Normalise float32 reflectance → uint16 for all formats.
         if img.dtype == np.float32:
             img = np.clip(img * 65535.0, 0, 65535).astype(np.uint16)
