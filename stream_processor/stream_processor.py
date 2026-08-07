@@ -17,7 +17,7 @@ import yaml
 import utm
 import glob2
 import piexif
-import queue
+import concurrent.futures
 import sqlite3
 import numpy as np
 from scipy.spatial.transform import Rotation as R
@@ -242,22 +242,18 @@ class SyncNode(Node):
         self.RTK_STATUS = None
         self.INS_STATUS = None
 
-        # --- State Machine Variables ---
+        # --- Synchronization state ---
+        # PPS is the temporal anchor.  Sensor messages are expected to arrive
+        # after the PPS that caused them, because the PPS path is shorter than
+        # the PWM-RX -> sensor-read -> ROS-TX paths.
         self.state_lock = threading.Lock()
         self.active_jobs = deque(maxlen=10)
-        self.max_latency = 0.2  # seconds (tune this)
+        self.max_latency = 0.2
 
-        # Per-sensor assignment windows (AFTER PPS)
-        self.assignment_window = {
-            "cam0": 0.95 / self.framerate,
-            "cam1": 0.95 / self.framerate,
-            "pose": 0.95 / self.framerate,
-            "spec": 0.95 / self.framerate,
-            "radalt": 0.95 / self.framerate,
-        }
-
-        # Allow slight negative offset
-        self.pretrigger_tolerance = 0.01
+        # Save work is deliberately kept out of the ROS callbacks.  The
+        # callback side only associates messages and creates a snapshot;
+        # workers perform image conversion, file I/O, and SQLite I/O.
+        self.save_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
         # --- Subscriptions ---
         self.create_subscription(
@@ -309,15 +305,6 @@ class SyncNode(Node):
             10,
         )
 
-        # --- Producer/consumer save queue ---
-        self.save_queue = queue.Queue()
-        self._save_workers = []
-        for _ in range(8):
-            t = threading.Thread(target=self._save_worker, daemon=True)
-            t.start()
-            self._save_workers.append(t)
-
-        threading.Thread(target=self._queue_watchdog, daemon=True).start()
         threading.Thread(target=self._cpu_temp_watchdog, daemon=True).start()
 
         self.get_logger().info("Sync Node Started. Waiting for PPS Trigger.")
@@ -497,43 +484,46 @@ class SyncNode(Node):
         self.get_logger().debug(f"[SYNC] {msg}")
 
     def assign_to_job(self, key, msg):
+        """Assign the first valid post-PPS sample to the oldest open job.
+
+        The acquisition system provides the synchronization ordering: the
+        controller PWM event is timestamped by the kernel and emitted as
+        /pps/time before the corresponding camera/INS/etc. message can arrive.
+        Therefore synchronization is causal, not nearest-timestamp matching.
+
+        Once a sample is assigned, it is never replaced by a later sample.
+        """
         ts = self.get_msg_time(msg)
 
         with self.state_lock:
-            best_job = None
-            best_dt = float("inf")
+            jobs = list(self.active_jobs)
+            for i, job in enumerate(jobs):
+                # This sample cannot belong to a future PPS.
+                if ts < job["pps_time"]:
+                    continue
 
-            for job in self.active_jobs:
+                # If a newer PPS has already occurred, this sample cannot be
+                # the response to the current job.  This prevents a late
+                # sample from an earlier/missed cycle being silently attached
+                # to the wrong cycle.  The acquisition design assumes the
+                # normal sensor path completes within one PPS period.
+                if i + 1 < len(jobs) and ts >= jobs[i + 1]["pps_time"]:
+                    continue
+
+                # A sensor can only fill this sensor's slot once.  Do not
+                # retroactively replace the capture with a later/closer sample.
+                if job["data"][key] is not None:
+                    continue
+
                 dt = ts - job["pps_time"]
-                # self.get_logger().info(
-                #     f"{key}: ts={ts:.6f}, pps={job['pps_time']:.6f}, dt={dt*1000:.1f}"
-                # )
-                # Allow small pre-trigger (INS edge case)
-                if dt < -self.pretrigger_tolerance:
-                    continue
+                job["data"][key] = msg
+                job["dt"][key] = dt
+                break
 
-                if dt > self.assignment_window[key]:
-                    continue
-
-                abs_dt = abs(dt)
-
-                if abs_dt < best_dt:
-                    best_dt = abs_dt
-                    best_job = job
-
-            if best_job is None:
-                return
-
-            existing = best_job["data"][key]
-
-            if existing is None:
-                best_job["data"][key] = msg
-                best_job["dt"][key] = best_dt
-            else:
-                # Replace if closer
-                if best_dt < best_job["dt"][key]:
-                    best_job["data"][key] = msg
-                    best_job["dt"][key] = best_dt
+        # Sensor callbacks can be the first callback after the latency
+        # threshold.  Let them resolve expired jobs instead of waiting for
+        # another PPS.
+        self.process_jobs()
 
     def process_jobs(self):
         now = time.time()
@@ -549,7 +539,16 @@ class SyncNode(Node):
 
                 if self.is_complete(job):
                     self.log_sync_diagnostics(job)
-                    self.save_queue.put((job["data"], job["stamp_msg"]))
+
+                    # Build a callback-independent snapshot before handing
+                    # work to the executor.  The worker never reads live
+                    # synchronization state.
+                    data = dict(job["data"])
+                    self.save_executor.submit(
+                        self.post_process_and_save,
+                        data,
+                        job["stamp_msg"],
+                    )
                 else:
                     self.get_logger().warn(
                         f"PPS frame drop @ {job['pps_time']:.3f} (incomplete)"
@@ -703,13 +702,6 @@ class SyncNode(Node):
 
         return cap, filepath
 
-    def _queue_watchdog(self):
-        while rclpy.ok():
-            sq = self.save_queue.qsize()
-            if sq > 0:
-                self.get_logger().info(f"Save queue depth: {sq}")
-            time.sleep(2.0)
-
     def _cpu_temp_watchdog(self, warn_c=80.0, crit_c=90.0, interval=10.0):
         while rclpy.ok():
             time.sleep(interval)
@@ -729,36 +721,9 @@ class SyncNode(Node):
             except Exception as e:
                 self.get_logger().debug(f"[THERMAL] temp read failed: {e}")
 
-    def _save_worker(self):
-        while True:
-            item = self.save_queue.get()
-            if item is None:
-                self.save_queue.task_done()
-                break
-            data, stamp = item
-            try:
-                self.post_process_and_save(data, stamp)
-            finally:
-                self.save_queue.task_done()
-
     def destroy_node(self):
-        # Snapshot depth before sentinels so we don't count them as pending work.
-        remaining = self.save_queue.qsize()
-        if remaining > 0:
-            self.get_logger().info(
-                f"Shutdown: waiting for {remaining} queued save(s) to finish..."
-            )
-            while not self.save_queue.empty():
-                self.get_logger().info(
-                    f"  save queue: {self.save_queue.qsize()} job(s) remaining"
-                )
-                time.sleep(2.0)
-
-        for _ in self._save_workers:
-            self.save_queue.put(None)
-
-        self.save_queue.join()
-
+        # Finish submitted save operations before tearing down the node.
+        self.save_executor.shutdown(wait=True)
         super().destroy_node()
 
 
