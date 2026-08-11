@@ -535,7 +535,7 @@ class SyncNode(Node):
             cams = []
 
             # 1. extract data from job
-            time_str = f"{pps.header.stamp.sec}.{str(pps.header.stamp.nanosec).rjust(9, '0')}"
+            time_str = f"{pps.sec}.{str(pps.nanosec).rjust(9, '0')}"
             self.get_logger().info(f"Saving data frame at timestep {time_str}")
 
             cam0_raw = self.br.imgmsg_to_cv2(
