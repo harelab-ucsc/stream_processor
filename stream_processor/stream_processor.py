@@ -510,6 +510,13 @@ class SyncNode(Node):
             self.spec
         )
 
+        self.pps = None
+        self.cam0 = None
+        self.cam1,
+        self.ins = None
+        self.radalt = None
+        self.spec = None
+
     def _post_process_and_save(
         self,
         pps,
