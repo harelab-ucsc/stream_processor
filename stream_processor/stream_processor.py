@@ -530,7 +530,8 @@ class SyncNode(Node):
     ):
         try:
             out = CaptureComplete()
-            out.header.stamp = pps.header.stamp
+            out.header.stamp.sec = pps.sec
+            out.header.stamp.nanosec = pps.nanosec
             cams = []
 
             # 1. extract data from job
