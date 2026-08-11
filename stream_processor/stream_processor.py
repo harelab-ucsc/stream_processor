@@ -500,7 +500,7 @@ class SyncNode(Node):
         self.get_logger().info('    Saving Data Frame.')
         now = time.time()
 
-        self.save_executor.submit(
+        future = self.save_executor.submit(
             self._post_process_and_save,
             self.pps,
             self.cam0,
@@ -510,9 +510,11 @@ class SyncNode(Node):
             self.spec
         )
 
+        future.add_done_callback(self._save_future_done)
+
         self.pps = None
         self.cam0 = None
-        self.cam1,
+        self.cam1 = None
         self.ins = None
         self.radalt = None
         self.spec = None
@@ -526,10 +528,11 @@ class SyncNode(Node):
         radalt,
         spec,
     ):
-        out = CaptureComplete()
-        out.header.stamp = pps.header.stamp
-        cams = []
         try:
+            out = CaptureComplete()
+            out.header.stamp = pps.header.stamp
+            cams = []
+
             # 1. extract data from job
             time_str = f"{pps.header.stamp.sec}.{str(pps.header.stamp.nanosec).rjust(9, '0')}"
             self.get_logger().info(f"Saving data frame at timestep {time_str}")
@@ -668,6 +671,16 @@ class SyncNode(Node):
         cap.cam_pose_ins.orientation.w = float(quat_cam_ins[3])
 
         return cap, filepath
+
+    def _save_future_done(self, future):
+        try:
+            future.result()
+            self.get_logger().info("[THREAD] save worker completed")
+        except Exception:
+            self.get_logger().error(
+                "[THREAD] save worker raised:\n"
+                + traceback.format_exc()
+            )
 
     def _cpu_temp_watchdog(self, warn_c=80.0, crit_c=90.0, interval=10.0):
         while rclpy.ok():
