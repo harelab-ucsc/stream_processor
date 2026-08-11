@@ -380,6 +380,7 @@ class SyncNode(Node):
 
     def pps_cb(self, msg: BuiltinTime):
         if self.pps is None:
+            self.get_logger().info('    ---> STROBE at PPS')
             self.pps = msg
         self.update_check_list()
         if self.status_check():
@@ -387,6 +388,7 @@ class SyncNode(Node):
 
     def cam0_cb(self, msg):
         if self.cam0 is None:
+            self.get_logger().info('    ---> STROBED Cam0')
             self.cam0 = msg
         self.update_check_list()
         if self.status_check():
@@ -394,6 +396,7 @@ class SyncNode(Node):
 
     def cam1_cb(self, msg):
         if self.cam1 is None:
+            self.get_logger().info('    ---> STROBED Cam1')
             self.cam1 = msg
         self.update_check_list()
         if self.status_check():
@@ -402,14 +405,14 @@ class SyncNode(Node):
     def ins_cb(self, msg):
         # Check if Strobed
         if msg.hdw_status & self.HDW_STROBE == self.HDW_STROBE:
-            # self.get_logger().info('    ---> STROBED')
+            self.get_logger().info('    ---> STROBED INS')
             self.ins = msg
         self.update_check_list()
         if self.status_check():
             self.process_job()
 
     def radalt_cb(self, msg):
-        if msg.snr > 13 and self.radalt is None:  # manufacturer-specified SNR floor
+        if msg.snr > 13 and self.radalt is None:  # manufacturer SNR floor
             self.radalt = msg
         self.update_check_list()
         if self.status_check():
@@ -494,6 +497,7 @@ class SyncNode(Node):
             pil_img.save(filename, format="JPEG", quality=95)
 
     def process_job(self):
+        self.get_logger().info('    Saving Data Frame.')
         now = time.time()
 
         self.save_executor.submit(
@@ -516,7 +520,7 @@ class SyncNode(Node):
         spec,
     ):
         out = CaptureComplete()
-        out.header.stamp = stamp
+        out.header.stamp = pps.header.stamp
         cams = []
         try:
             # 1. extract data from job
@@ -531,9 +535,9 @@ class SyncNode(Node):
             )
 
             # 2. post process into save/send target formats
-            tmp = (pose.ins_status) & self.INS_STATUS_GPS_NAV_FIX_MASK
+            tmp = (ins.ins_status) & self.INS_STATUS_GPS_NAV_FIX_MASK
             RTK_STATUS = tmp >> self.INS_STATUS_GPS_NAV_FIX_OFFSET
-            tmp = (pose.ins_status) & self.INS_STATUS_SOLUTION_MASK
+            tmp = (ins.ins_status) & self.INS_STATUS_SOLUTION_MASK
             INS_STATUS = tmp >> self.INS_STATUS_SOLUTION_OFFSET
 
             out.rtk_status = RTK_STATUS
