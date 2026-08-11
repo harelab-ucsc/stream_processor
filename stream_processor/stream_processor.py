@@ -357,12 +357,12 @@ class SyncNode(Node):
 
     def update_check_list(self):
         self.check_list = [
-            self.pps, \
-            self.cam0, \
-            self.cam1, \
-            self.ins, \
-            self.radalt, \
-            self.spec, \
+            self.pps,
+            self.cam0,
+            self.cam1,
+            self.ins,
+            self.radalt,
+            self.spec,
         ]
 
     def status_check(self):
