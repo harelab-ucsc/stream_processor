@@ -603,7 +603,7 @@ class SyncNode(Node):
                 cap, filename = self._pack_camera_capture(cam_name, time_str)
 
                 fr += 1
-                self.image_save(img, filename, pose)
+                self.image_save(img, filename, ins)
                 cams.append(cap)
 
             for i, img in enumerate(rgb_cams):
@@ -612,7 +612,7 @@ class SyncNode(Node):
 
                 fr += 1
                 inp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                self.image_save(inp, filename, pose)
+                self.image_save(inp, filename, ins)
                 cams.append(cap)
 
             self.get_logger().info(
