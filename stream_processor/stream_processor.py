@@ -572,8 +572,8 @@ class SyncNode(Node):
 
             out.utm_letter = u[-1]
             out.utm_number = f"{u[-2]}"
-            out.rad_altitude = self.radalt
-            out.spec_cal = self.spec
+            out.rad_altitude = radalt
+            out.spec_cal = spec
 
             t = [  # UTM -> x:easting, y:northing, z:WGS84 altitude
                 u[1],  # North
