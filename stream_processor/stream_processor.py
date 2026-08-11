@@ -96,7 +96,7 @@ pps_qos = QoSProfile(
 
 img_qos = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
-    depth=10,
+    depth=2,
     reliability=ReliabilityPolicy.RELIABLE,
     durability=DurabilityPolicy.VOLATILE,
 )
@@ -192,10 +192,13 @@ class SyncNode(Node):
                     cv2.CV_32FC1,
                 )
 
+                # ffc =
+
                 self.camera_models[cam_name] = {
                     "cam": cam,
                     "map1": map1,
                     "map2": map2,
+                    # "ffc": ffc,
                 }
 
         self.spectrometer_wavelengths = [
@@ -246,14 +249,24 @@ class SyncNode(Node):
         # PPS is the temporal anchor.  Sensor messages are expected to arrive
         # after the PPS that caused them, because the PPS path is shorter than
         # the PWM-RX -> sensor-read -> ROS-TX paths.
-        self.state_lock = threading.Lock()
-        self.active_jobs = deque(maxlen=10)
-        self.max_latency = 0.2
-
         # Save work is deliberately kept out of the ROS callbacks.  The
         # callback side only associates messages and creates a snapshot;
-        # workers perform image conversion, file I/O, and SQLite I/O.
+        # workers perform image conversion, file I/O, etc.
         self.save_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self.pps = None
+        self.cam0 = None
+        self.cam1 = None
+        self.ins = None
+        self.radalt = None
+        self.spec = None
+        self.check_list = [
+            self.pps,
+            self.cam0,
+            self.cam1,
+            self.ins,
+            self.radalt,
+            self.spec
+        ]
 
         # --- Subscriptions ---
         self.create_subscription(
@@ -342,6 +355,23 @@ class SyncNode(Node):
                 f"Error occurred while clearing {self.dir_name} files: {e}.\n"
             )
 
+    def update_check_list(self):
+        self.check_list = [
+            self.pps, \
+            self.cam0, \
+            self.cam1, \
+            self.ins, \
+            self.radalt, \
+            self.spec, \
+        ]
+
+    def status_check(self):
+        tst = [0 if i is None else 1 for i in self.check_list]
+        if sum(tst) == len(self.check_list):
+            return True
+        else:
+            return False
+
     def get_msg_time(self, msg):
         try:
             return msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
@@ -349,60 +379,50 @@ class SyncNode(Node):
             return time.time()
 
     def pps_cb(self, msg: BuiltinTime):
-        pps_time = msg.sec + msg.nanosec * 1e-9
-
-        job = {
-            "pps_time": pps_time,
-            "stamp_msg": msg,
-            "created_at": time.time(),
-            "data": {
-                "cam0": None,
-                "cam1": None,
-                "pose": None,
-                "spec": None,
-                "radalt": None,
-            },
-            "dt": {},  # diagnostics
-        }
-
-        with self.state_lock:
-            self.active_jobs.append(job)
-
-        # Try to resolve older jobs
-        self.process_jobs()
+        if self.pps is None:
+            self.pps = msg
+        self.update_check_list()
+        if self.status_check():
+            self.process_job()
 
     def cam0_cb(self, msg):
-        self.assign_to_job("cam0", msg)
+        if self.cam0 is None:
+            self.cam0 = msg
+        self.update_check_list()
+        if self.status_check():
+            self.process_job()
 
     def cam1_cb(self, msg):
-        self.assign_to_job("cam1", msg)
+        if self.cam1 is None:
+            self.cam1 = msg
+        self.update_check_list()
+        if self.status_check():
+            self.process_job()
 
     def ins_cb(self, msg):
         # Check if Strobed
         if msg.hdw_status & self.HDW_STROBE == self.HDW_STROBE:
             # self.get_logger().info('    ---> STROBED')
-            self.assign_to_job("pose", msg)
+            self.ins = msg
+        self.update_check_list()
+        if self.status_check():
+            self.process_job()
 
     def radalt_cb(self, msg):
-        if msg.snr > 13:  # manufacturer-specified SNR floor
-            self.assign_to_job("radalt", msg)
+        if msg.snr > 13 and self.radalt is None:  # manufacturer-specified SNR floor
+            self.radalt = msg
+        self.update_check_list()
+        if self.status_check():
+            self.process_job()
 
     # saves lists in case of a change in msg.values
     def spec_cb(self, msg):
-        self.current_raw_spec = list(msg.values)
-        self.assign_to_job("spec", msg)
+        if self.spec is None:
+            self.spec = msg
+        self.update_check_list()
+        if self.status_check():
+            self.process_job()
 
-    def _panel_spec_ref_cb(self, msg: Float32MultiArray) -> None:
-        self.panel_spec_ref = list(msg.data)
-        self.get_logger().info(
-            f"Irradiance reference received: {len(self.panel_spec_ref)} bands"
-        )
-        if self._calibration_ready():
-            self.get_logger().info(
-                "Calibration complete — image capture and saving now active."
-            )
-
-    # --- 3. Processing and Saving ---
     def image_save(self, img, filename, pose):
 
         # Normalise float32 reflectance → uint16 for all formats.
@@ -473,105 +493,41 @@ class SyncNode(Node):
         else:
             pil_img.save(filename, format="JPEG", quality=95)
 
-    def is_complete(self, job):
-        return all(v is not None for v in job["data"].values())
-
-    def log_sync_diagnostics(self, job):
-        dt_info = job["dt"]
-        msg = ", ".join(
-            f"{k}:{v * 1000:.1f}ms" for k, v in dt_info.items() if v is not None
-        )
-        self.get_logger().debug(f"[SYNC] {msg}")
-
-    def assign_to_job(self, key, msg):
-        """Assign the first valid post-PPS sample to the oldest open job.
-
-        The acquisition system provides the synchronization ordering: the
-        controller PWM event is timestamped by the kernel and emitted as
-        /pps/time before the corresponding camera/INS/etc. message can arrive.
-        Therefore synchronization is causal, not nearest-timestamp matching.
-
-        Once a sample is assigned, it is never replaced by a later sample.
-        """
-        ts = self.get_msg_time(msg)
-
-        with self.state_lock:
-            jobs = list(self.active_jobs)
-            for i, job in enumerate(jobs):
-                # This sample cannot belong to a future PPS.
-                if ts < job["pps_time"]:
-                    continue
-
-                # If a newer PPS has already occurred, this sample cannot be
-                # the response to the current job.  This prevents a late
-                # sample from an earlier/missed cycle being silently attached
-                # to the wrong cycle.  The acquisition design assumes the
-                # normal sensor path completes within one PPS period.
-                if i + 1 < len(jobs) and ts >= jobs[i + 1]["pps_time"]:
-                    continue
-
-                # A sensor can only fill this sensor's slot once.  Do not
-                # retroactively replace the capture with a later/closer sample.
-                if job["data"][key] is not None:
-                    continue
-
-                dt = ts - job["pps_time"]
-                job["data"][key] = msg
-                job["dt"][key] = dt
-                break
-
-        # Sensor callbacks can be the first callback after the latency
-        # threshold.  Let them resolve expired jobs instead of waiting for
-        # another PPS.
-        self.process_jobs()
-
-    def process_jobs(self):
+    def process_job(self):
         now = time.time()
 
-        with self.state_lock:
-            while self.active_jobs:
-                job = self.active_jobs[0]
+        self.save_executor.submit(
+            self._post_process_and_save,
+            self.pps,
+            self.cam0,
+            self.cam1,
+            self.ins,
+            self.radalt,
+            self.spec
+        )
 
-                if now - job["created_at"] < self.max_latency:
-                    break  # wait for more data
-
-                self.active_jobs.popleft()
-
-                if self.is_complete(job):
-                    self.log_sync_diagnostics(job)
-
-                    # Build a callback-independent snapshot before handing
-                    # work to the executor.  The worker never reads live
-                    # synchronization state.
-                    data = dict(job["data"])
-                    self.save_executor.submit(
-                        self.post_process_and_save,
-                        data,
-                        job["stamp_msg"],
-                    )
-                else:
-                    self.get_logger().warn(
-                        f"PPS frame drop @ {job['pps_time']:.3f} (incomplete)"
-                    )
-                    for key in job["data"].keys():
-                        if job["data"][key] is None:
-                            self.get_logger().warn(f"    job['data'][{key}] is None")
-
-    def post_process_and_save(self, data, stamp):
+    def _post_process_and_save(
+        self,
+        pps,
+        cam0,
+        cam1,
+        ins,
+        radalt,
+        spec,
+    ):
         out = CaptureComplete()
         out.header.stamp = stamp
         cams = []
         try:
             # 1. extract data from job
-            time_str = f"{stamp.sec}.{str(stamp.nanosec).rjust(9, '0')}"
+            time_str = f"{pps.header.stamp.sec}.{str(pps.header.stamp.nanosec).rjust(9, '0')}"
             self.get_logger().info(f"Saving data frame at timestep {time_str}")
 
-            pose = data["pose"]  # ins_msg
             cam0_raw = self.br.imgmsg_to_cv2(
-                data["cam0"], desired_encoding="passthrough"
+                cam0, desired_encoding="passthrough"
             )
             cam1_raw = self.br.imgmsg_to_cv2(
-                data["cam1"], desired_encoding="passthrough"
+                cam1, desired_encoding="passthrough"
             )
 
             # 2. post process into save/send target formats
@@ -597,7 +553,7 @@ class SyncNode(Node):
 
             # Convert pose lat-lon -> UTM
             # returns easting, northing, zone number, zone letter
-            u = utm.from_latlon(pose.lla[0], pose.lla[1])
+            u = utm.from_latlon(ins.lla[0], ins.lla[1])
 
             out.utm_letter = u[-1]
             out.utm_number = f"{u[-2]}"
@@ -609,13 +565,13 @@ class SyncNode(Node):
             t = [  # UTM -> x:easting, y:northing, z:WGS84 altitude
                 u[1],  # North
                 u[0],  # East
-                -pose.lla[2],  # Down
+                -ins.lla[2],  # Down
             ]
             quat = [  # quat is scalar-first NED -> convert to scalar-last NED
-                pose.qn2b[1],
-                pose.qn2b[2],
-                pose.qn2b[3],
-                pose.qn2b[0],
+                ins.qn2b[1],
+                ins.qn2b[2],
+                ins.qn2b[3],
+                ins.qn2b[0],
             ]
 
             out.ins_pose_ned.position.x = float(t[0])
