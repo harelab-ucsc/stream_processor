@@ -192,13 +192,13 @@ class SyncNode(Node):
                     cv2.CV_32FC1,
                 )
 
-                # ffc =
+                ffc =  = np.load("/home/mwmaster/catch/ffc_test/ffc_gain.npy")
 
                 self.camera_models[cam_name] = {
                     "cam": cam,
                     "map1": map1,
                     "map2": map2,
-                    # "ffc": ffc,
+                    "ffc": ffc,
                 }
 
         self.spectrometer_wavelengths = [
