@@ -192,7 +192,7 @@ class SyncNode(Node):
                     cv2.CV_32FC1,
                 )
 
-                ffc =  = np.load("/home/mwmaster/catch/ffc_test/ffc_gain.npy")
+                ffc = = np.load("/home/mwmaster/catch/ffc_test/ffc_gain.npy")
 
                 self.camera_models[cam_name] = {
                     "cam": cam,
