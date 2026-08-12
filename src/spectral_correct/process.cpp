@@ -134,7 +134,7 @@ std::vector<py::array_t<float>> process_cam0(
     return outputs;
 }
 
-std::vector<py::array> process_cam1(py::array input, int num_slices) {
+std::vector<py::array> process_cam1(py::array input, py::array ffc_gain, int num_slices) {
     if (input.ndim() != 2) {
         throw std::invalid_argument(
             "process_cam1: expected 2-D Bayer image, got ndim=" +
@@ -193,13 +193,36 @@ std::vector<py::array> process_cam1(py::array input, int num_slices) {
             cv::Mat src(static_cast<int>(h), static_cast<int>(slice_w), cv_src_type,
                         const_cast<std::uint8_t *>(in_base + offset_bytes),
                         static_cast<size_t>(in_step));
+            // FFC
+            // gain_slice = corresponding slice of camera FFC gain
+            cv::Mat gain_slice(static_cast<int>(h), static_cast<int>(slice_w), CV_32FC1,
+                               const_cast<float *>(ffc_gain.data()) + i * slice_w,
+                               static_cast<size_t>(ffc_gain.strides(0)));
+
+            // src_float = float(src)
+            cv::Mat src_float;
+            src.convertTo(src_float, CV_32F);
+
+            // corrected_float = src_float * gain_slice
+            cv::Mat corrected_float;
+            cv::multiply(src_float, gain_slice, corrected_float);
+
+            // corrected_float = clamp(corrected_float, 0, dtype_max)
+            cv::Mat corrected_clamped;
+            cv::threshold(corrected_float, corrected_clamped, 0.0, dtype_max, cv::THRESH_TOZERO);
+            cv::threshold(corrected_clamped, corrected_clamped, dtype_max, dtype_max, cv::THRESH_TRUNC);
+
+            // corrected = convert corrected_float back to uint8/uint16
+            cv::Mat corrected;
+            corrected_clamped.convertTo(corrected, is_8bit ? CV_8U : CV_16U);
 
             std::uint8_t * out_data = static_cast<std::uint8_t *>(outputs[i].mutable_data());
             const py::ssize_t out_step = outputs[i].strides(0);
             cv::Mat dst(static_cast<int>(h), static_cast<int>(slice_w), cv_dst_type,
                         out_data, static_cast<size_t>(out_step));
 
-            cv::cvtColor(src, dst, cv::COLOR_BayerBG2RGB);
+            // cv::cvtColor(src, dst, cv::COLOR_BayerBG2RGB);
+            cv::cvtColor(corrected, dst, cv::COLOR_BayerBG2RGB);
         }
     }
 
