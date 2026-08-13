@@ -134,7 +134,7 @@ std::vector<py::array_t<float>> process_cam0(
     return outputs;
 }
 
-std::vector<py::array> process_cam1(py::array input, py::list<py::array> ffc_gain, int num_slices) {
+std::vector<py::array> process_cam1(py::array input, py::list ffc_gain, int num_slices) {
     if (input.ndim() != 2) {
         throw std::invalid_argument(
             "process_cam1: expected 2-D Bayer image, got ndim=" +
@@ -174,6 +174,7 @@ std::vector<py::array> process_cam1(py::array input, py::list<py::array> ffc_gai
     const int cv_dst_type = is_8bit ? CV_8UC3 : CV_16UC3;
     const py::ssize_t in_step = input.strides(0);
     const py::ssize_t bpp = is_8bit ? 1 : 2;
+    const float dtype_max = is_8bit ? 255.0f : 65535.0f;
 
     std::vector<py::array> outputs;
     outputs.reserve(num_slices);
@@ -195,9 +196,10 @@ std::vector<py::array> process_cam1(py::array input, py::list<py::array> ffc_gai
                         static_cast<size_t>(in_step));
             // FFC
             // gain_slice = corresponding slice of camera FFC gain
+            const py::array_t<float> gain_arr = ffc_gain[i].cast<py::array_t<float>>();
             cv::Mat gain_slice(static_cast<int>(h), static_cast<int>(slice_w), CV_32FC1,
-                               const_cast<float *>(ffc_gain[i].data()) + i * slice_w,
-                               static_cast<size_t>(ffc_gain[i].strides(0)));
+                               const_cast<float *>(gain_arr.data()),
+                               static_cast<size_t>(gain_arr.strides(0)));
 
             // src_float = float(src)
             cv::Mat src_float;

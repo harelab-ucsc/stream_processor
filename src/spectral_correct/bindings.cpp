@@ -35,6 +35,7 @@ Returns:
 
     m.def("process_cam1", &process_cam1,
           py::arg("input"),
+          py::arg("ffc_gain"),
           py::arg("num_slices") = 4,
           R"doc(
 Split a full cam1 BG-Bayer image into N RGB sub-images via cv::cvtColor.
@@ -43,6 +44,7 @@ Slice width must be even to preserve Bayer phase across the cut.
 
 Args:
     input: (H, W) uint8 or uint16 ndarray, C-contiguous.
+    ffc_gain: list of N (H, W/N) float32 ndarrays, one per slice.
     num_slices: integer.
 
 Returns:

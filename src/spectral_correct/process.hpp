@@ -29,6 +29,7 @@ std::vector<py::array_t<float>> process_cam0(
 
 std::vector<py::array> process_cam1(
     py::array input,
+    py::list ffc_gain,
     int num_slices);
 
 // Returns a (possibly empty) list of human-readable issue strings.
