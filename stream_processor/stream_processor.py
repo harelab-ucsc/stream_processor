@@ -177,6 +177,7 @@ class SyncNode(Node):
         )
         self.calib = RigCalibration(self.calibration_path)
         self.camera_models = {}
+        self.ffcs = []
         for sensor in ["rgb", "multispec"]:
             for ind in [1, 2, 3, 4]:
                 cam_name = f"{sensor}_{ind}"
@@ -192,7 +193,13 @@ class SyncNode(Node):
                     cv2.CV_32FC1,
                 )
 
+<<<<<<< HEAD
                 ffc = = np.load("/home/mwmaster/catch/ffc_test/ffc_gain.npy")
+=======
+                ffc =  = np.load("/home/mwmaster/catch/ffc_test/ffc_gain.npy")
+                if 'rgb' in sensor:
+                    self.ffcs.append(ffc)
+>>>>>>> 4e3aad4 (ffc plumbing for the C++ process)
 
                 self.camera_models[cam_name] = {
                     "cam": cam,
@@ -561,7 +568,7 @@ class SyncNode(Node):
                 for _issue in check_slice_health(_band):
                     self.get_logger().error(f"[IMG HEALTH] cam0[{_i}]: {_issue}")
 
-            rgb_cams = process_cam1(cam1_raw)  # 4 × RGB    (H, W/4, 3)
+            rgb_cams = process_cam1(cam1_raw, self.ffcs)  # 4 × RGB    (H, W/4, 3)
             for _i, _rgb in enumerate(rgb_cams):
                 for _issue in check_slice_health(_rgb):
                     self.get_logger().error(f"[IMG HEALTH] cam1[{_i}]: {_issue}")
@@ -608,11 +615,16 @@ class SyncNode(Node):
 
             for i, img in enumerate(rgb_cams):
                 cam_name = f"rgb_{i+1}"
+                params = self.camera_models[cam_name]
+                ffc = params["ffc"]
+                map1 = params["map1"]
+                map2 = params["map2"]
                 cap, filename = self._pack_camera_capture(cam_name, time_str)
 
                 fr += 1
                 inp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                self.image_save(inp, filename, ins)
+                dst = cv.remap(inp, map1, map2, cv.INTER_LINEAR)
+                self.image_save(dst, filename, ins)
                 cams.append(cap)
 
             self.get_logger().info(
