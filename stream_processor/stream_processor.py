@@ -163,17 +163,17 @@ class SyncNode(Node):
 
         # --- Parameters and Setup ---
         self.declare_parameter("img_format", ".png")
-        self.img_format = self.get_parameter("img_format").value
+        self.img_format = str(self.get_parameter("img_format").value)
 
         self.declare_parameter("dir_name", "parsed_flight")
-        self.dir_name = self.get_parameter("dir_name").value
+        self.dir_name = str(self.get_parameter("dir_name").value)
         self.dir_name = os.path.join(os.path.expanduser("~"), self.dir_name)
         self.dirCheck()
 
         # load camera calibration
         self.declare_parameter("calibration_path", "")
         self.calibration_path = os.path.join(
-            os.path.expanduser("~"), self.get_parameter("calibration_path").value
+            os.path.expanduser("~"), str(self.get_parameter("calibration_path").value)
         )
         self.calib = RigCalibration(self.calibration_path)
         self.camera_models = {}
@@ -194,11 +194,11 @@ class SyncNode(Node):
                 )
 
                 if 'rgb' in sensor:
-                    filepath = self.calibration_path.split(os.sep)[0]
-                    ffc = = np.load(os.path.join(
+                    filepath = os.path.dirname(self.calibration_path)
+                    ffc = np.load(os.path.join(
                         filepath,
-                        f"/ffc_gain_cam{ind-1}.npy"
-                    )
+                        f"ffc_gain_cam{ind-1}.npy"
+                    ))
                     self.ffcs.append(ffc)
 
                 self.camera_models[cam_name]={
@@ -230,18 +230,18 @@ class SyncNode(Node):
         ]
 
         db_path=os.path.join(
-            os.path.expanduser("~"), self.get_parameter("dir_name").value
+            os.path.expanduser("~"), str(self.get_parameter("dir_name").value)
         )
         os.makedirs(db_path, exist_ok=True)
 
         # --- Camera framerate
         self.declare_parameter("framerate", 3.0)
-        self.framerate=self.get_parameter("framerate").value
+        self.framerate=self.get_parameter("framerate").get_parameter_value().double_value
 
         # --- Ground sample distance (metres per pixel).
         # Update this to match your optics once you have calibration data.
         self.declare_parameter("gsd_m", 0.03)
-        self.gsd_m=self.get_parameter("gsd_m").value
+        self.gsd_m=self.get_parameter("gsd_m").get_parameter_value().double_value
 
         # --- INS Bitmasks ---
         self.HDW_STROBE=0x00000020
@@ -623,7 +623,7 @@ class SyncNode(Node):
 
                 fr += 1
                 inp=cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                dst=cv.remap(inp, map1, map2, cv.INTER_LINEAR)
+                dst=cv2.remap(inp, map1, map2, cv2.INTER_LINEAR)
                 self.image_save(dst, filename, ins)
                 cams.append(cap)
 
