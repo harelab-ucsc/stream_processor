@@ -193,13 +193,14 @@ class SyncNode(Node):
                     cv2.CV_32FC1,
                 )
 
-<<<<<<< HEAD
+
+<< << << < HEAD
                 ffc = = np.load("/home/mwmaster/catch/ffc_test/ffc_gain.npy")
-=======
-                ffc =  = np.load("/home/mwmaster/catch/ffc_test/ffc_gain.npy")
+== == == =
+                ffc = = np.load("/home/mwmaster/catch/ffc_test/ffc_gain.npy")
                 if 'rgb' in sensor:
                     self.ffcs.append(ffc)
->>>>>>> 4e3aad4 (ffc plumbing for the C++ process)
+>>>>>> > 4e3aad4(ffc plumbing for the C + + process)
 
                 self.camera_models[cam_name] = {
                     "cam": cam,
