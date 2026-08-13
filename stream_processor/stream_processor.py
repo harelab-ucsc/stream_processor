@@ -201,14 +201,14 @@ class SyncNode(Node):
                     ))
                     self.ffcs.append(ffc)
 
-                self.camera_models[cam_name]={
+                self.camera_models[cam_name] = {
                     "cam": cam,
                     "map1": map1,
                     "map2": map2,
                     "ffc": ffc,
                 }
 
-        self.spectrometer_wavelengths=[
+        self.spectrometer_wavelengths = [
             410,
             435,
             460,  # ind 2: nearest to 450nm filter
@@ -229,28 +229,28 @@ class SyncNode(Node):
             860,  # ind 17: nearest to 850nm filter
         ]
 
-        db_path=os.path.join(
+        db_path = os.path.join(
             os.path.expanduser("~"), str(self.get_parameter("dir_name").value)
         )
         os.makedirs(db_path, exist_ok=True)
 
         # --- Camera framerate
         self.declare_parameter("framerate", 3.0)
-        self.framerate=self.get_parameter("framerate").get_parameter_value().double_value
+        self.framerate = self.get_parameter("framerate").get_parameter_value().double_value
 
         # --- Ground sample distance (metres per pixel).
         # Update this to match your optics once you have calibration data.
         self.declare_parameter("gsd_m", 0.03)
-        self.gsd_m=self.get_parameter("gsd_m").get_parameter_value().double_value
+        self.gsd_m = self.get_parameter("gsd_m").get_parameter_value().double_value
 
         # --- INS Bitmasks ---
-        self.HDW_STROBE=0x00000020
-        self.INS_STATUS_SOLUTION_MASK=0x000F0000
-        self.INS_STATUS_SOLUTION_OFFSET=16
-        self.INS_STATUS_GPS_NAV_FIX_MASK=0x03000000
-        self.INS_STATUS_GPS_NAV_FIX_OFFSET=24
-        self.RTK_STATUS=None
-        self.INS_STATUS=None
+        self.HDW_STROBE = 0x00000020
+        self.INS_STATUS_SOLUTION_MASK = 0x000F0000
+        self.INS_STATUS_SOLUTION_OFFSET = 16
+        self.INS_STATUS_GPS_NAV_FIX_MASK = 0x03000000
+        self.INS_STATUS_GPS_NAV_FIX_OFFSET = 24
+        self.RTK_STATUS = None
+        self.INS_STATUS = None
 
         # --- Synchronization state ---
         # PPS is the temporal anchor.  Sensor messages are expected to arrive
@@ -259,14 +259,14 @@ class SyncNode(Node):
         # Save work is deliberately kept out of the ROS callbacks.  The
         # callback side only associates messages and creates a snapshot;
         # workers perform image conversion, file I/O, etc.
-        self.save_executor=concurrent.futures.ThreadPoolExecutor(max_workers=4)
-        self.pps=None
-        self.cam0=None
-        self.cam1=None
-        self.ins=None
-        self.radalt=None
-        self.spec=None
-        self.check_list=[
+        self.save_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self.pps = None
+        self.cam0 = None
+        self.cam1 = None
+        self.ins = None
+        self.radalt = None
+        self.spec = None
+        self.check_list = [
             self.pps,
             self.cam0,
             self.cam1,
@@ -319,7 +319,7 @@ class SyncNode(Node):
                 "as7265x_at_msgs not available — spectrometer SUB disabled"
             )
 
-        self.capture_pub=self.create_publisher(
+        self.capture_pub = self.create_publisher(
             CaptureComplete,
             "/sync/capture_complete",
             10,
@@ -347,7 +347,7 @@ class SyncNode(Node):
 
     def clear_dir(self):
         try:
-            files=glob2.glob(os.path.join(self.dir_name, "*"))
+            files = glob2.glob(os.path.join(self.dir_name, "*"))
             if len(files) >= 1:
                 for file in files:
                     if os.path.isfile(file):
@@ -363,7 +363,7 @@ class SyncNode(Node):
             )
 
     def update_check_list(self):
-        self.check_list=[
+        self.check_list = [
             self.pps,
             self.cam0,
             self.cam1,
@@ -373,7 +373,7 @@ class SyncNode(Node):
         ]
 
     def status_check(self):
-        tst=[0 if i is None else 1 for i in self.check_list]
+        tst = [0 if i is None else 1 for i in self.check_list]
         if sum(tst) == len(self.check_list):
             return True
         else:
@@ -388,7 +388,7 @@ class SyncNode(Node):
     def pps_cb(self, msg: BuiltinTime):
         if self.pps is None:
             self.get_logger().info('    ---> STROBE at PPS')
-            self.pps=msg
+            self.pps = msg
         self.update_check_list()
         if self.status_check():
             self.process_job()
@@ -396,7 +396,7 @@ class SyncNode(Node):
     def cam0_cb(self, msg):
         if self.cam0 is None:
             self.get_logger().info('    ---> STROBED Cam0')
-            self.cam0=msg
+            self.cam0 = msg
         self.update_check_list()
         if self.status_check():
             self.process_job()
@@ -404,7 +404,7 @@ class SyncNode(Node):
     def cam1_cb(self, msg):
         if self.cam1 is None:
             self.get_logger().info('    ---> STROBED Cam1')
-            self.cam1=msg
+            self.cam1 = msg
         self.update_check_list()
         if self.status_check():
             self.process_job()
@@ -413,14 +413,14 @@ class SyncNode(Node):
         # Check if Strobed
         if msg.hdw_status & self.HDW_STROBE == self.HDW_STROBE:
             self.get_logger().info('    ---> STROBED INS')
-            self.ins=msg
+            self.ins = msg
         self.update_check_list()
         if self.status_check():
             self.process_job()
 
     def radalt_cb(self, msg):
         if msg.snr > 13 and self.radalt is None:  # manufacturer SNR floor
-            self.radalt=msg
+            self.radalt = msg
         self.update_check_list()
         if self.status_check():
             self.process_job()
@@ -428,7 +428,7 @@ class SyncNode(Node):
     # saves lists in case of a change in msg.values
     def spec_cb(self, msg):
         if self.spec is None:
-            self.spec=msg
+            self.spec = msg
         self.update_check_list()
         if self.status_check():
             self.process_job()
@@ -437,7 +437,7 @@ class SyncNode(Node):
 
         # Normalise float32 reflectance → uint16 for all formats.
         if img.dtype == np.float32:
-            img=np.clip(img * 65535.0, 0, 65535).astype(np.uint16)
+            img = np.clip(img * 65535.0, 0, 65535).astype(np.uint16)
 
         if self.img_format in (".tiff", ".tif"):
             self._save_geotiff(img, filename, pose)
@@ -448,22 +448,22 @@ class SyncNode(Node):
 
     def _save_geotiff(self, img, filename, pose):
         """Write a georeferenced uint16 GeoTIFF using the INS position."""
-        h, w=img.shape[:2]
-        bands=1 if img.ndim == 2 else img.shape[2]
+        h, w = img.shape[:2]
+        bands = 1 if img.ndim == 2 else img.shape[2]
 
         if pose is not None:
-            u=utm.from_latlon(pose.lla[0], pose.lla[1])
-            easting, northing, zone_num, zone_letter=u
-            is_northern=zone_letter >= "N"
-            epsg=32600 + zone_num if is_northern else 32700 + zone_num
-            crs=CRS.from_epsg(epsg)
+            u = utm.from_latlon(pose.lla[0], pose.lla[1])
+            easting, northing, zone_num, zone_letter = u
+            is_northern = zone_letter >= "N"
+            epsg = 32600 + zone_num if is_northern else 32700 + zone_num
+            crs = CRS.from_epsg(epsg)
             # Place image centre at the INS position; derive upper-left corner.
-            west=easting - (w / 2.0) * self.gsd_m
-            north=northing + (h / 2.0) * self.gsd_m
-            transform=from_origin(west, north, self.gsd_m, self.gsd_m)
+            west = easting - (w / 2.0) * self.gsd_m
+            north = northing + (h / 2.0) * self.gsd_m
+            transform = from_origin(west, north, self.gsd_m, self.gsd_m)
         else:
-            crs=None
-            transform=rasterio.transform.IDENTITY
+            crs = None
+            transform = rasterio.transform.IDENTITY
 
         with rasterio.open(
             filename,
@@ -486,11 +486,11 @@ class SyncNode(Node):
 
     def _save_geojpeg(self, img, filename, pose):
         if img.dtype == np.uint16:
-            img=(img >> 8).astype(np.uint8)
-        pil_img=Img.fromarray(img)
+            img = (img >> 8).astype(np.uint8)
+        pil_img = Img.fromarray(img)
         if pose is not None:
-            lla=pose.lla
-            gps_ifd={
+            lla = pose.lla
+            gps_ifd = {
                 piexif.GPSIFD.GPSLatitudeRef: "N" if lla[0] >= 0 else "S",
                 piexif.GPSIFD.GPSLatitude: deg_to_dms_rational(abs(lla[0])),
                 piexif.GPSIFD.GPSLongitudeRef: "E" if lla[1] >= 0 else "W",
@@ -498,16 +498,16 @@ class SyncNode(Node):
                 piexif.GPSIFD.GPSAltitudeRef: 0,
                 piexif.GPSIFD.GPSAltitude: (int(lla[2] * 100), 100),
             }
-            exif_bytes=piexif.dump({"GPS": gps_ifd})
+            exif_bytes = piexif.dump({"GPS": gps_ifd})
             pil_img.save(filename, exif=exif_bytes, format="JPEG", quality=95)
         else:
             pil_img.save(filename, format="JPEG", quality=95)
 
     def process_job(self):
         self.get_logger().info('    Saving Data Frame.')
-        now=time.time()
+        now = time.time()
 
-        future=self.save_executor.submit(
+        future = self.save_executor.submit(
             self._post_process_and_save,
             self.pps,
             self.cam0,
@@ -519,12 +519,12 @@ class SyncNode(Node):
 
         future.add_done_callback(self._save_future_done)
 
-        self.pps=None
-        self.cam0=None
-        self.cam1=None
-        self.ins=None
-        self.radalt=None
-        self.spec=None
+        self.pps = None
+        self.cam0 = None
+        self.cam1 = None
+        self.ins = None
+        self.radalt = None
+        self.spec = None
 
     def _post_process_and_save(
         self,
@@ -536,94 +536,94 @@ class SyncNode(Node):
         spec,
     ):
         try:
-            out=CaptureComplete()
-            out.header.stamp.sec=pps.sec
-            out.header.stamp.nanosec=pps.nanosec
-            cams=[]
+            out = CaptureComplete()
+            out.header.stamp.sec = pps.sec
+            out.header.stamp.nanosec = pps.nanosec
+            cams = []
 
             # 1. extract data from job
-            time_str=f"{pps.sec}.{str(pps.nanosec).rjust(9, '0')}"
+            time_str = f"{pps.sec}.{str(pps.nanosec).rjust(9, '0')}"
             self.get_logger().info(f"Saving data frame at timestep {time_str}")
 
-            cam0_raw=self.br.imgmsg_to_cv2(
+            cam0_raw = self.br.imgmsg_to_cv2(
                 cam0, desired_encoding="passthrough"
             )
-            cam1_raw=self.br.imgmsg_to_cv2(
+            cam1_raw = self.br.imgmsg_to_cv2(
                 cam1, desired_encoding="passthrough"
             )
 
             # 2. post process into save/send target formats
-            tmp=(ins.ins_status) & self.INS_STATUS_GPS_NAV_FIX_MASK
-            RTK_STATUS=tmp >> self.INS_STATUS_GPS_NAV_FIX_OFFSET
-            tmp=(ins.ins_status) & self.INS_STATUS_SOLUTION_MASK
-            INS_STATUS=tmp >> self.INS_STATUS_SOLUTION_OFFSET
+            tmp = (ins.ins_status) & self.INS_STATUS_GPS_NAV_FIX_MASK
+            RTK_STATUS = tmp >> self.INS_STATUS_GPS_NAV_FIX_OFFSET
+            tmp = (ins.ins_status) & self.INS_STATUS_SOLUTION_MASK
+            INS_STATUS = tmp >> self.INS_STATUS_SOLUTION_OFFSET
 
-            out.rtk_status=RTK_STATUS
-            out.ins_status=INS_STATUS
+            out.rtk_status = RTK_STATUS
+            out.ins_status = INS_STATUS
 
-            spec_for_correction=None
+            spec_for_correction = None
 
-            multispec_cams=process_cam0(cam0_raw, spec_for_correction)  # 4 × (H,W/4)
+            multispec_cams = process_cam0(cam0_raw, spec_for_correction)  # 4 × (H,W/4)
             for _i, _band in enumerate(multispec_cams):
                 for _issue in check_slice_health(_band):
                     self.get_logger().error(f"[IMG HEALTH] cam0[{_i}]: {_issue}")
 
-            rgb_cams=process_cam1(cam1_raw, self.ffcs)  # 4 × RGB    (H, W/4, 3)
+            rgb_cams = process_cam1(cam1_raw, self.ffcs)  # 4 × RGB    (H, W/4, 3)
             for _i, _rgb in enumerate(rgb_cams):
                 for _issue in check_slice_health(_rgb):
                     self.get_logger().error(f"[IMG HEALTH] cam1[{_i}]: {_issue}")
 
             # Convert pose lat-lon -> UTM
             # returns easting, northing, zone number, zone letter
-            u=utm.from_latlon(ins.lla[0], ins.lla[1])
+            u = utm.from_latlon(ins.lla[0], ins.lla[1])
 
-            out.utm_letter=u[-1]
-            out.utm_number=f"{u[-2]}"
-            out.rad_altitude=radalt
-            out.spec_cal=spec
+            out.utm_letter = u[-1]
+            out.utm_number = f"{u[-2]}"
+            out.rad_altitude = radalt
+            out.spec_cal = spec
 
-            t=[  # UTM -> x:easting, y:northing, z:WGS84 altitude
+            t = [  # UTM -> x:easting, y:northing, z:WGS84 altitude
                 u[1],  # North
                 u[0],  # East
                 -ins.lla[2],  # Down
             ]
-            quat=[  # quat is scalar-first NED -> convert to scalar-last NED
+            quat = [  # quat is scalar-first NED -> convert to scalar-last NED
                 ins.qn2b[1],
                 ins.qn2b[2],
                 ins.qn2b[3],
                 ins.qn2b[0],
             ]
 
-            out.ins_pose_ned.position.x=float(t[0])
-            out.ins_pose_ned.position.y=float(t[1])
-            out.ins_pose_ned.position.z=float(t[2])
+            out.ins_pose_ned.position.x = float(t[0])
+            out.ins_pose_ned.position.y = float(t[1])
+            out.ins_pose_ned.position.z = float(t[2])
 
-            out.ins_pose_ned.orientation.x=float(quat[0])
-            out.ins_pose_ned.orientation.y=float(quat[1])
-            out.ins_pose_ned.orientation.z=float(quat[2])
-            out.ins_pose_ned.orientation.w=float(quat[3])
+            out.ins_pose_ned.orientation.x = float(quat[0])
+            out.ins_pose_ned.orientation.y = float(quat[1])
+            out.ins_pose_ned.orientation.z = float(quat[2])
+            out.ins_pose_ned.orientation.w = float(quat[3])
 
             # 3. Save Images to File
-            fr=0
+            fr = 0
             for i, img in enumerate(multispec_cams):
-                cam_name=f"multispec_{i+1}"
-                cap, filename=self._pack_camera_capture(cam_name, time_str)
+                cam_name = f"multispec_{i+1}"
+                cap, filename = self._pack_camera_capture(cam_name, time_str)
 
                 fr += 1
                 self.image_save(img, filename, ins)
                 cams.append(cap)
 
             for i, img in enumerate(rgb_cams):
-                cam_name=f"rgb_{i+1}"
-                params=self.camera_models[cam_name]
-                ffc=params["ffc"]
-                map1=params["map1"]
-                map2=params["map2"]
-                cap, filename=self._pack_camera_capture(cam_name, time_str)
+                cam_name = f"rgb_{i+1}"
+                params = self.camera_models[cam_name]
+                ffc = params["ffc"]
+                map1 = params["map1"]
+                map2 = params["map2"]
+                cap, filename = self._pack_camera_capture(cam_name, time_str)
 
                 fr += 1
-                inp=cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                dst=cv2.remap(inp, map1, map2, cv2.INTER_LINEAR)
+                inp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                dst = cv2.remap(inp, map1, map2, cv2.INTER_LINEAR)
                 self.image_save(dst, filename, ins)
                 cams.append(cap)
 
@@ -631,7 +631,7 @@ class SyncNode(Node):
                 f"Cycle Complete: Saved {fr} images as {self.img_format} at {time_str}")
 
             # 4. Send CaptureComplete manifest downstream
-            out.cameras=cams
+            out.cameras = cams
             self.capture_pub.publish(out)
 
         except Exception as ex:
@@ -640,46 +640,46 @@ class SyncNode(Node):
             )
 
     def _pack_camera_capture(self, cam_name, time_str, cam_model="pinhole", dist_model="radtan"):
-        filename=f"{cam_name}_{time_str}{self.img_format}"
-        filepath=os.path.join(self.dir_name, filename)
-        cam=self.calib.get_camera_info(cam_name)
+        filename = f"{cam_name}_{time_str}{self.img_format}"
+        filepath = os.path.join(self.dir_name, filename)
+        cam = self.calib.get_camera_info(cam_name)
 
         # pack CameraCapture
-        cap=CameraCapture()
-        cap.camera_name=cam_name
-        cap.image_filename=filename
-        cap.camera_model=cam_model
-        cap.distortion_model=dist_model
+        cap = CameraCapture()
+        cap.camera_name = cam_name
+        cap.image_filename = filename
+        cap.camera_model = cam_model
+        cap.distortion_model = dist_model
 
-        cap.height=cam["height"]
-        cap.width=cam["width"]
+        cap.height = cam["height"]
+        cap.width = cam["width"]
 
-        cap.fx=cam["K"][0, 0]
-        cap.fy=cam["K"][1, 1]
-        cap.cx=cam["K"][0, 2]
-        cap.cy=cam["K"][1, 2]
+        cap.fx = cam["K"][0, 0]
+        cap.fy = cam["K"][1, 1]
+        cap.cx = cam["K"][0, 2]
+        cap.cy = cam["K"][1, 2]
 
-        cap.k1=cam["D"][0]
-        cap.k2=cam["D"][1]
-        cap.p1=cam["D"][2]
-        cap.p2=cam["D"][3]
-        cap.k3=cam["D"][4]
+        cap.k1 = cam["D"][0]
+        cap.k2 = cam["D"][1]
+        cap.p1 = cam["D"][2]
+        cap.p2 = cam["D"][3]
+        cap.k3 = cam["D"][4]
 
-        T_cam_ins=np.array(cam["T_cam_ins"])
+        T_cam_ins = np.array(cam["T_cam_ins"])
 
-        t_cam_ins=T_cam_ins[:3, 3]
-        rot_cam_ins=T_cam_ins[:3, :3]
+        t_cam_ins = T_cam_ins[:3, 3]
+        rot_cam_ins = T_cam_ins[:3, :3]
 
-        quat_cam_ins=R.from_matrix(rot_cam_ins).as_quat()
+        quat_cam_ins = R.from_matrix(rot_cam_ins).as_quat()
 
-        cap.cam_pose_ins.position.x=float(t_cam_ins[0])
-        cap.cam_pose_ins.position.y=float(t_cam_ins[1])
-        cap.cam_pose_ins.position.z=float(t_cam_ins[2])
+        cap.cam_pose_ins.position.x = float(t_cam_ins[0])
+        cap.cam_pose_ins.position.y = float(t_cam_ins[1])
+        cap.cam_pose_ins.position.z = float(t_cam_ins[2])
 
-        cap.cam_pose_ins.orientation.x=float(quat_cam_ins[0])
-        cap.cam_pose_ins.orientation.y=float(quat_cam_ins[1])
-        cap.cam_pose_ins.orientation.z=float(quat_cam_ins[2])
-        cap.cam_pose_ins.orientation.w=float(quat_cam_ins[3])
+        cap.cam_pose_ins.orientation.x = float(quat_cam_ins[0])
+        cap.cam_pose_ins.orientation.y = float(quat_cam_ins[1])
+        cap.cam_pose_ins.orientation.z = float(quat_cam_ins[2])
+        cap.cam_pose_ins.orientation.w = float(quat_cam_ins[3])
 
         return cap, filepath
 
@@ -699,8 +699,8 @@ class SyncNode(Node):
             try:
                 for zone_path in glob2.glob("/sys/class/thermal/thermal_zone*/temp"):
                     with open(zone_path) as f:
-                        temp_c=int(f.read().strip()) / 1000.0
-                    zone=zone_path.split("/")[-2]
+                        temp_c = int(f.read().strip()) / 1000.0
+                    zone = zone_path.split("/")[-2]
                     if temp_c >= crit_c:
                         self.get_logger().error(
                             f"[THERMAL] {zone}: {temp_c:.1f}°C — CRITICAL"
@@ -720,7 +720,7 @@ class SyncNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node=SyncNode()
+    node = SyncNode()
     try:
         while rclpy.ok():
             try:
