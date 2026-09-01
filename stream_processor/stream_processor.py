@@ -386,9 +386,14 @@ class SyncNode(Node):
             return time.time()
 
     def pps_cb(self, msg: BuiltinTime):
-        if self.pps is None:
-            self.get_logger().info('    ---> STROBE at PPS')
-            self.pps = msg
+        # reset check list and attributes on new PPS
+        self.pps = msg
+        self.cam0 = None
+        self.cam1 = None
+        self.ins = None
+        self.radalt = None
+        self.spec = None
+
         self.update_check_list()
         if self.status_check():
             self.process_job()
@@ -505,7 +510,6 @@ class SyncNode(Node):
 
     def process_job(self):
         self.get_logger().info('    Saving Data Frame.')
-        now = time.time()
 
         future = self.save_executor.submit(
             self._post_process_and_save,
@@ -525,6 +529,7 @@ class SyncNode(Node):
         self.ins = None
         self.radalt = None
         self.spec = None
+        self.update_check_list()
 
     def _post_process_and_save(
         self,
@@ -616,19 +621,24 @@ class SyncNode(Node):
             for i, img in enumerate(rgb_cams):
                 cam_name = f"rgb_{i+1}"
                 params = self.camera_models[cam_name]
-                ffc = params["ffc"]
-                map1 = params["map1"]
-                map2 = params["map2"]
                 cap, filename = self._pack_camera_capture(cam_name, time_str)
 
                 fr += 1
                 inp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                dst = cv2.remap(inp, map1, map2, cv2.INTER_LINEAR)
+
+                dst = cv.remap(
+                    inp,
+                    params["map1"],
+                    params["map2"],
+                    cv.INTER_LINEAR
+                )
                 self.image_save(dst, filename, ins)
                 cams.append(cap)
 
             self.get_logger().info(
-                f"Cycle Complete: Saved {fr} images as {self.img_format} at {time_str}")
+                f"Cycle Complete: Saved {fr} images as {self.img_format}"
+                f" at {time_str}"
+            )
 
             # 4. Send CaptureComplete manifest downstream
             out.cameras = cams
