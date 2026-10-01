@@ -274,6 +274,8 @@ class SyncNode(Node):
             self.radalt,
             self.spec
         ]
+        self.panel_calib = None
+        self.panel_spec_ref = None
 
         # --- Subscriptions ---
         self.create_subscription(
@@ -319,6 +321,21 @@ class SyncNode(Node):
                 "as7265x_at_msgs not available — spectrometer SUB disabled"
             )
 
+        # 5. MicaCRPCal panel calibration factors (latched)
+        self.create_subscription(
+            Float32MultiArray,
+            "/panel_cal/irradiance",
+            self._panel_cal_cb,
+            qos_profile=panel_cal_qos,
+        )
+
+        # 6. MicaCRPCal irradiance reference snapshot (latched)
+        self.create_subscription(
+            Float32MultiArray,
+            "/panel_cal/spec_ref",
+            self._spec_ref_cb,
+            qos_profile=panel_cal_qos,
+        )
         self.capture_pub = self.create_publisher(
             CaptureComplete,
             "/sync/capture_complete",
@@ -437,6 +454,18 @@ class SyncNode(Node):
         self.update_check_list()
         if self.status_check():
             self.process_job()
+
+    def _panel_cal_cb(self, msg: Float32MultiArray) -> None:
+        self.panel_calib = list(msg.data)
+        self.get_logger().info(
+            f"Panel calibration received: {len(self.panel_calib)} band factors: {self.panel_calib}"
+        )
+
+    def _spec_ref_cb(self, msg: Float32MultiArray) -> None:
+        self.panel_spec_ref = list(msg.data)
+        self.get_logger().info(
+            f"Irradiance reference received: {len(self.panel_spec_ref)} bands"
+        )
 
     def image_save(self, img, filename, pose):
 
@@ -566,7 +595,18 @@ class SyncNode(Node):
             out.rtk_status = RTK_STATUS
             out.ins_status = INS_STATUS
 
-            spec_for_correction = None
+            if self.panel_calib is None:
+                spec_for_correction = None
+            elif self.panel_spec_ref is None or spec is None:
+                spec_for_correction = np.asarray(self.panel_calib, dtype=np.float32)
+            else:
+                spec_vals = spec.values if hasattr(spec, "values") else spec
+                total = []
+                for i, k in enumerate(_CAM0_SPEC_IDX):
+                    cur = float(spec_vals[k])
+                    irr_ratio = float(self.panel_spec_ref[k]) / cur if cur > 0.0 else 1.0
+                    total.append(float(self.panel_calib[i]) * irr_ratio)
+                spec_for_correction = np.asarray(total, dtype=np.float32)
 
             multispec_cams = process_cam0(cam0_raw, spec_for_correction)  # 4 × (H,W/4)
             for _i, _band in enumerate(multispec_cams):
