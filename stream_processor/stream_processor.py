@@ -50,7 +50,7 @@ from .spectral_correct import process_cam0, process_cam1, check_slice_health
 from birdseye_msgs.msg import CameraCapture, CaptureComplete
 
 # Tolerant imports — these message types live in repos that may not be
-# installed in test/CI containers (inertial_sense_ros2, custom_msgs).
+# installed in test/CI containers (inertial_sense_ros2, ros2_radalt_msgs).
 # Subscriptions are skipped when their msg types aren't importable, and
 # all_caught() naturally only requires inputs we actually subscribed to.
 try:
@@ -305,7 +305,7 @@ class SyncNode(Node):
             )
         else:
             self.get_logger().warn(
-                "custom_msgs not available — radar altimeter SUB disabled"
+                "ros2_radalt_msgs not available — radar altimeter SUB disabled"
             )
 
         # 4. AS7265x Spectrometer (For Reflectance)
